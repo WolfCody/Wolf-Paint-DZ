@@ -1,0 +1,12 @@
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+/target/
+keystore.properties
+*.jks
+*.keystore
+.DS_Store
+# Cargo.lock is NOT ignored: commit it after the first `cargo generate-lockfile`.

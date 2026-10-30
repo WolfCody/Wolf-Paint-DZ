@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RPX Paint</string>
+    <string name="gallery_title">Галерея</string>
+
+    <string name="engine_title">Ядро на Rust</string>
+    <string name="engine_ready">Работает, версия %1$s</string>
+    <string name="engine_failed">Не удалось запустить: %1$s</string>
+
+    <string name="empty_title">Нет открытых документов</string>
+    <string name="empty_body">Создайте документ, чтобы проверить ядро. Сохранение проектов (.rpx) появится на этапе 6, поэтому документы живут, пока работает процесс приложения.</string>
+    <string name="empty_body_engine_failed">Графическое ядро не запустилось, создать документ нельзя. Переустановите приложение или установите сборку для процессора этого устройства.</string>
+
+    <string name="action_new_document">Новый документ</string>
+    <string name="action_close_document">Закрыть документ</string>
+    <string name="action_create">Создать</string>
+    <string name="action_cancel">Отмена</string>
+
+    <string name="dialog_new_title">Новый документ</string>
+    <string name="new_document_default_name">Без названия</string>
+    <string name="field_name">Название</string>
+    <string name="field_width">Ширина, px</string>
+    <string name="field_height">Высота, px</string>
+    <string name="mode_raster">Растр</string>
+    <string name="mode_vector">Вектор</string>
+
+    <string name="document_dimensions">%1$d × %2$d px</string>
+    <string name="document_tiles">Сетка тайлов %1$d × %2$d, всего %3$d по %4$d px</string>
+    <string name="document_allocated">Тайлов с пикселями: %1$d</string>
+    <string name="document_dense">Полный RGBA-буфер занял бы %1$s; память не выделена</string>
+    <string name="document_vector_note">Векторные объекты появятся на этапе 3.</string>
+
+    <string name="error_invalid_input">Проверьте значения: %1$s</string>
+    <string name="error_canvas_too_large">Холст слишком большой: %1$s</string>
+    <string name="error_other">Ошибка в ядре: %1$s</string>
+
+    <string-array name="size_units">
+        <item>Б</item>
+        <item>КБ</item>
+        <item>МБ</item>
+        <item>ГБ</item>
+        <item>ТБ</item>
+    </string-array>
+</resources>

@@ -1,0 +1,7 @@
+[toolchain]
+# 1.99.1, not 1.99.0: the 1.99.0 release had a bug in values returned to C-ABI callers
+# on some x86-64 targets, which is exactly the JNI boundary (fixed in 1.99.1).
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-linux-android", "x86_64-linux-android", "armv7-linux-androideabi"]

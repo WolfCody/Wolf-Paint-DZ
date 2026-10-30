@@ -1,0 +1,29 @@
+# Rust workspace of the RPX engine.
+# Stage 1 contains only what the Android shell needs today:
+#   core-model : pure Rust document model + handle registry (no unsafe, no dependencies)
+#   core-ffi   : JNI surface, builds librpx_core.so
+# The remaining crates from the roadmap (core-raster, core-vector, ...) are added
+# in the stage that first needs them, not before.
+[workspace]
+resolver = "3"
+members = ["crates/core-model", "crates/core-ffi"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# Edition 2024 needs Rust 1.85+. The pinned toolchain is in rust-toolchain.toml.
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+# jni 0.21.x API is used on purpose; 0.22.x is a breaking redesign (see docs/ARCHITECTURE.md).
+jni = "0.21.1"
+log = "0.4"
+android_logger = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+# MUST stay "unwind": the JNI layer converts panics into Java exceptions with catch_unwind.
+panic = "unwind"

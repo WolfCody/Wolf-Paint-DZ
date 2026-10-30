@@ -1,0 +1,258 @@
+# CI for RPX Paint. A development tool, not part of the app: the installed app has no network code.
+#
+# Job graph:
+#   bootstrap  creates (or reuses the committed) Cargo.lock and Gradle wrapper and uploads them as
+#              the artifact `bootstrap-files` BEFORE anything can fail. rust/android never generate
+#              these files themselves: they download exactly this artifact.
+#   rust       static checks (strict), host tests, Android target check
+#   android    unit tests + debug APK through ./gradlew, APK permission check
+#
+# Versions below must match rust-toolchain.toml, app/build.gradle.kts, gradle-wrapper.properties and
+# docs/VERSIONS.md; scripts/check_project_consistency.py enforces it.
+name: android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_instrumented:
+        description: "Also run instrumented tests on an x86_64 emulator (slow)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  CARGO_NDK_VERSION: "4.1.2"
+  NDK_VERSION: "28.2.13676358"
+  BUILD_TOOLS_VERSION: "36.0.0"
+  PLATFORM: "android-36"
+  GRADLE_VERSION: "9.5.0"
+
+jobs:
+  bootstrap:
+    name: Bootstrap (Cargo.lock + Gradle wrapper)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            -c clippy -c rustfmt \
+            -t aarch64-linux-android -t x86_64-linux-android -t armv7-linux-androideabi
+
+      - name: Cargo.lock (reuse committed, else generate once)
+        run: |
+          if [ -f Cargo.lock ]; then
+            echo "Using the committed Cargo.lock"
+          else
+            echo "::warning::Cargo.lock is not committed: generated here. Commit it from the 'bootstrap-files' artifact."
+            cargo generate-lockfile
+          fi
+          test -s Cargo.lock
+
+      # Gradle is installed here ONLY so that scripts/generate-wrapper.sh has a `gradle` to run.
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Gradle wrapper (reuse committed, else generate with the two-stage script)
+        run: |
+          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "Using the committed Gradle wrapper"
+          else
+            echo "::warning::Gradle wrapper is not committed: generated here. Commit it from the 'bootstrap-files' artifact."
+            ./scripts/generate-wrapper.sh
+          fi
+          chmod +x gradlew
+
+      # Uploaded before any verification step, and even if a later step fails.
+      - name: Upload bootstrap files
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bootstrap-files
+          path: |
+            Cargo.lock
+            gradlew
+            gradlew.bat
+            gradle/wrapper/gradle-wrapper.jar
+          if-no-files-found: warn
+
+      - name: Wrapper really runs Gradle ${{ env.GRADLE_VERSION }}
+        run: |
+          ./gradlew --version | tee gradle-version.txt
+          grep -Eq "^Gradle ${GRADLE_VERSION//./\\.}[[:space:]]*$" gradle-version.txt
+
+      - name: Strict project checks
+        run: python3 scripts/check_project_consistency.py --strict
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Bootstrap files"
+            echo "Download the artifact **bootstrap-files** and commit its contents to the repository root:"
+            echo '```'
+            echo "git add --chmod=+x gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar Cargo.lock"
+            echo '```'
+            echo "Artifacts do not keep the executable bit; \`chmod +x gradlew\` after unpacking."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rust:
+    name: Rust (host tests + Android target check)
+    needs: bootstrap
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get the bootstrap files (the single Cargo.lock and wrapper)
+        uses: actions/download-artifact@v8
+        with:
+          name: bootstrap-files
+          path: .
+
+      - name: Check downloaded files and run strict static checks
+        run: |
+          chmod +x gradlew
+          test -s Cargo.lock && test -f gradle/wrapper/gradle-wrapper.jar
+          python3 scripts/check_jni_symbols.py
+          python3 scripts/check_project_consistency.py --strict
+          scripts/test_verify_apk_permissions.sh
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            -c clippy -c rustfmt \
+            -t aarch64-linux-android -t x86_64-linux-android -t armv7-linux-androideabi
+          rustc --version
+          cargo --version
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      - name: cargo clippy (report only)
+        run: cargo clippy --workspace --all-targets --locked
+
+      - name: cargo check for Android targets
+        run: |
+          for target in aarch64-linux-android x86_64-linux-android armv7-linux-androideabi; do
+            cargo check --package core-ffi --target "$target" --locked
+          done
+
+  android:
+    name: Android debug APK
+    needs: bootstrap
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get the bootstrap files (the single Cargo.lock and wrapper)
+        uses: actions/download-artifact@v8
+        with:
+          name: bootstrap-files
+          path: .
+
+      - name: Check downloaded files
+        run: |
+          chmod +x gradlew
+          test -s Cargo.lock && test -f gradle/wrapper/gradle-wrapper.jar
+          python3 scripts/check_project_consistency.py --strict
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            -c clippy -c rustfmt \
+            -t aarch64-linux-android -t x86_64-linux-android -t armv7-linux-androideabi
+
+      - name: Cache cargo-ndk
+        id: cargo-ndk-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ env.CARGO_NDK_VERSION }}-${{ runner.os }}
+
+      - name: Install cargo-ndk ${{ env.CARGO_NDK_VERSION }}
+        if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+
+      - name: Android SDK packages
+        run: |
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;${PLATFORM}" "build-tools;${BUILD_TOOLS_VERSION}" "ndk;${NDK_VERSION}"
+
+      # No gradle-version here: the build must run through the generated wrapper, not a Gradle
+      # installed by the action or preinstalled on the runner image. This step only adds caching.
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Gradle wrapper version
+        run: |
+          ./gradlew --version | tee gradle-version.txt
+          grep -Eq "^Gradle ${GRADLE_VERSION//./\\.}[[:space:]]*$" gradle-version.txt
+
+      - name: Unit tests and debug APK
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+
+      - name: Proof that the wrapper distribution was used
+        run: |
+          test -d "${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/gradle-${GRADLE_VERSION}-bin"
+
+      - name: Verify APK contents and permissions
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          ls -l "$APK"
+          unzip -l "$APK" | grep "librpx_core.so"
+          AAPT2="${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}/aapt2" scripts/verify-apk-permissions.sh "$APK"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rpx-paint-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: unit-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: Enable KVM for the emulator
+        if: ${{ inputs.run_instrumented }}
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Instrumented tests (emulator, x86_64)
+        if: ${{ inputs.run_instrumented }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: ./gradlew :app:connectedDebugAndroidTest --stacktrace
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() && inputs.run_instrumented }}
+        with:
+          name: instrumented-test-reports
+          path: app/build/reports/androidTests/
+          if-no-files-found: ignore

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RPX Paint</string>
+    <string name="gallery_title">Gallery</string>
+
+    <string name="engine_title">Rust engine</string>
+    <string name="engine_ready">Running, version %1$s</string>
+    <string name="engine_failed">Could not start: %1$s</string>
+
+    <string name="empty_title">No documents open</string>
+    <string name="empty_body">Create a document to try the engine. Saving projects (.rpx) comes in stage 6, so documents last only until the app process ends.</string>
+    <string name="empty_body_engine_failed">The drawing engine did not start, so documents cannot be created. Reinstall the app or install a build for this device’s CPU.</string>
+
+    <string name="action_new_document">New document</string>
+    <string name="action_close_document">Close document</string>
+    <string name="action_create">Create</string>
+    <string name="action_cancel">Cancel</string>
+
+    <string name="dialog_new_title">New document</string>
+    <string name="new_document_default_name">Untitled</string>
+    <string name="field_name">Name</string>
+    <string name="field_width">Width, px</string>
+    <string name="field_height">Height, px</string>
+    <string name="mode_raster">Raster</string>
+    <string name="mode_vector">Vector</string>
+
+    <string name="document_dimensions">%1$d × %2$d px</string>
+    <string name="document_tiles">Tile grid %1$d × %2$d, %3$d tiles of %4$d px</string>
+    <string name="document_allocated">Tiles with pixel data: %1$d</string>
+    <string name="document_dense">A full RGBA buffer would take %1$s; none is allocated</string>
+    <string name="document_vector_note">Vector objects arrive in stage 3.</string>
+
+    <string name="error_invalid_input">Check the values: %1$s</string>
+    <string name="error_canvas_too_large">The canvas is too large: %1$s</string>
+    <string name="error_other">Something went wrong in the engine: %1$s</string>
+
+    <string-array name="size_units">
+        <item>B</item>
+        <item>KB</item>
+        <item>MB</item>
+        <item>GB</item>
+        <item>TB</item>
+    </string-array>
+</resources>

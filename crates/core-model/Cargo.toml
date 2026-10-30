@@ -1,0 +1,12 @@
+[package]
+name = "core-model"
+description = "RPX document model, handle registry and engine session state (no unsafe, no dependencies)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
