@@ -6,8 +6,9 @@
 | Gradle | 9.5.0 | Minimum and default for AGP 9.3. Kotlin 2.4.0 is documented as compatible with 9.5.0. Newer Gradle (9.8.x exists) is not needed. |
 | Kotlin / Compose compiler plugin | 2.4.0 | Released June 2026, compatible with Gradle 9.5.0. The Compose compiler plugin version equals the Kotlin version. |
 | Kotlin plugin for Android | not applied | AGP 9 has built-in Kotlin; applying `org.jetbrains.kotlin.android` is an error. |
-| compileSdk / targetSdk / minSdk | 37 / 36 / 26 | AGP 9.3 supports up to 37; 36 chosen as the conservative stable level. minSdk 26 as required. |
-| Build Tools | 36.0.0 | AGP 9.3 default. |
+| compileSdk / targetSdk / minSdk | 37.0 / 36 / 26 | Compose 1.12+ (BOM 2026.09.00) requires compileSdk 37; official Compose docs: "starting with Compose 1.12.0 projects must use compileSdk 37 and AGP 9". AGP 9.3 supports up to API 37, the minimum AGP for API 37.0 is 9.1.1, so AGP 9.3.2 / Gradle 9.5.0 / JDK 17 need no change. targetSdk and minSdk are unchanged (compileSdk is independent of targetSdk). |
+| Android SDK platform package | `platforms;android-37.0` (directory `platforms/android-37.0`) | Since API 37 `sdkmanager` publishes platforms only with the minor version; `platforms;android-37` does not exist and `sdkmanager` then prints "Warning: Failed to find package" but still exits with 0 (that is why CI now checks the log and `--list_installed`). In Gradle: `compileSdk { version = release(37) { minorApiLevel = 0 } }`. If a future dependency demands 37.1, change `minorApiLevel` and `PLATFORM` to `android-37.1` together; `check_project_consistency.py` derives the expected package from `build.gradle.kts`. |
+| Build Tools | 36.0.0 | AGP 9.3 default (also listed as the minimum for AGP 9.3). |
 | NDK | 28.2.13676358 | AGP default. r28+ aligns ELF segments to 16 KB (cargo-ndk also passes `max-page-size=16384`). |
 | JDK | 17 | AGP minimum; bytecode target 17. |
 | Compose BOM | 2026.09.00 | Latest BOM I could confirm in the official docs. |

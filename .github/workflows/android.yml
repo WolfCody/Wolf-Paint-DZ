@@ -1,4 +1,4 @@
-# CI for RPX Paint. A development tool, not part of the app: the installed app has no network code.
+# CI for Wolf Paint DZ. A development tool, not part of the app: the installed app has no network code.
 #
 # Job graph:
 #   bootstrap  creates (or reuses the committed) Cargo.lock and Gradle wrapper and uploads them as
@@ -9,7 +9,7 @@
 #
 # Versions below must match rust-toolchain.toml, app/build.gradle.kts, gradle-wrapper.properties and
 # docs/VERSIONS.md; scripts/check_project_consistency.py enforces it.
-name: android
+name: Wolf Paint DZ CI
 
 on:
   push:
@@ -151,7 +151,7 @@ jobs:
           done
 
   android:
-    name: Android debug APK
+    name: Wolf Paint DZ debug APK
     needs: bootstrap
     runs-on: ubuntu-24.04
     steps:
@@ -191,11 +191,30 @@ jobs:
         if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
         run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
 
-      - name: Android SDK packages
+      - name: Android SDK packages (installed and verified)
         run: |
+          set -euo pipefail
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platforms;${PLATFORM}" "build-tools;${BUILD_TOOLS_VERSION}" "ndk;${NDK_VERSION}"
+          set -o pipefail
+          echo "Platform packages offered by sdkmanager:"
+          "$SDKMANAGER" --list 2>/dev/null | grep -E "platforms;android-3[67]" || true
+          PACKAGES=("platforms;${PLATFORM}" "build-tools;${BUILD_TOOLS_VERSION}" "ndk;${NDK_VERSION}")
+          "$SDKMANAGER" "${PACKAGES[@]}" 2>&1 | tee sdkmanager-install.log
+          # sdkmanager exits with 0 even for an unknown package ("Warning: Failed to find package ..."),
+          # so the log and the installed list are checked explicitly.
+          if grep -q "Failed to find package" sdkmanager-install.log; then
+            echo "::error::sdkmanager could not find a requested package (see log above)"
+            exit 1
+          fi
+          INSTALLED="$("$SDKMANAGER" --list_installed 2>/dev/null)"
+          for pkg in "${PACKAGES[@]}"; do
+            printf '%s\n' "$INSTALLED" | grep -qF "$pkg" || { echo "::error::package '$pkg' is not installed"; exit 1; }
+          done
+          test -d "${ANDROID_HOME}/platforms/${PLATFORM}" \
+            || { echo "::error::${ANDROID_HOME}/platforms/${PLATFORM} does not exist"; exit 1; }
+          echo "SDK packages verified: ${PACKAGES[*]}"
 
       # No gradle-version here: the build must run through the generated wrapper, not a Gradle
       # installed by the action or preinstalled on the runner image. This step only adds caching.
@@ -220,10 +239,14 @@ jobs:
           unzip -l "$APK" | grep "librpx_core.so"
           AAPT2="${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}/aapt2" scripts/verify-apk-permissions.sh "$APK"
 
+      # Gradle's output name stays app-debug.apk; the delivered file gets the product name.
+      - name: Name the APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk wolf-paint-dz-debug.apk
+
       - uses: actions/upload-artifact@v7
         with:
-          name: rpx-paint-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: wolf-paint-dz-debug-apk
+          path: wolf-paint-dz-debug.apk
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7

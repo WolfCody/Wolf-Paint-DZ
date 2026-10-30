@@ -26,5 +26,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "rpx-paint"
+rootProject.name = "wolf-paint-dz"
 include(":app")

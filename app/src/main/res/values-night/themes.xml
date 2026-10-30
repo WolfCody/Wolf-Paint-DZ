@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Rpx" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/rpx_window_background</item>
+    <style name="Theme.WolfPaint" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/wolf_window_background</item>
     </style>
 </resources>

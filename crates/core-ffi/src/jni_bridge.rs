@@ -1,4 +1,4 @@
-//! JNI exports for `com.rpxpaint.app.core.RustBridge`.
+//! JNI exports for `com.dzekiwolf.wolfpaintdz.core.RustBridge`.
 //!
 //! Contract (keep in sync with RustBridge.kt; `scripts/check_jni_symbols.py` verifies names
 //! and arity):
@@ -98,7 +98,7 @@ fn to_handle(raw: jlong) -> BridgeResult<Handle> {
 
 /// `static native fun nativeInit(workDir: String)`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeInit<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeInit<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     work_dir: JString<'local>,
@@ -112,7 +112,7 @@ pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeInit<'local>(
 
 /// `static native fun nativeVersion(): String`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeVersion<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeVersion<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jstring {
@@ -123,7 +123,7 @@ pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeVersion<'loca
 
 /// `static native fun nativeCreateDocument(name: String, mode: Int, width: Int, height: Int): Long`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeCreateDocument<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeCreateDocument<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     name: JString<'local>,
@@ -142,7 +142,7 @@ pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeCreateDocumen
 
 /// `static native fun nativeDocumentInfo(handle: Long): LongArray` (layout: `DocumentInfo::to_wire`)
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeDocumentInfo<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocumentInfo<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -158,7 +158,7 @@ pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeDocumentInfo<
 
 /// `static native fun nativeDocumentName(handle: Long): String`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeDocumentName<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocumentName<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -171,7 +171,7 @@ pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeDocumentName<
 
 /// `static native fun nativeCloseDocument(handle: Long)`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeCloseDocument<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeCloseDocument<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -184,7 +184,7 @@ pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeCloseDocument
 
 /// `static native fun nativeOpenDocuments(): LongArray`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeOpenDocuments<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeOpenDocuments<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jlongArray {
@@ -203,7 +203,7 @@ pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeOpenDocuments
 /// `static native fun nativeDebugPanic()` — proves that panics become Java exceptions.
 /// Debug builds panic on purpose; release builds report `Unsupported`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_rpxpaint_app_core_RustBridge_nativeDebugPanic<'local>(
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDebugPanic<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) {

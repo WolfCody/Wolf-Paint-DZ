@@ -78,7 +78,7 @@ def check_resources():
 
 def check_exceptions():
     rust = read("crates/core-ffi/src/lib.rs")
-    kotlin = read("app/src/main/kotlin/com/rpxpaint/app/core/RpxNativeException.kt")
+    kotlin = read("app/src/main/kotlin/com/dzekiwolf/wolfpaintdz/core/RpxNativeException.kt")
     r = set(re.findall(r'RpxNativeException\$(\w+)"', rust))
     k = set(re.findall(r"class (\w+)\(message: String\) : RpxNativeException", kotlin))
     if r != k:
@@ -124,6 +124,36 @@ def check_cargo():
         errors.append("rust-toolchain channel should be an exact version for reproducible builds")
 
 
+def parse_compile_sdk(gradle: str):
+    """Returns (major, minor) of compileSdk from app/build.gradle.kts, or (None, None)."""
+    structured = re.search(r"release\((\d+)\)\s*\{\s*minorApiLevel\s*=\s*(\d+)", gradle)
+    if structured:
+        return int(structured.group(1)), int(structured.group(2))
+    plain = re.search(r"^\s*compileSdk\s*=\s*(\d+)", gradle, re.M)
+    if plain:
+        major = int(plain.group(1))
+        if major >= 37:
+            errors.append(
+                f"compileSdk = {major} is ambiguous: since API 37 sdkmanager publishes only minor-versioned "
+                f"platforms. Use compileSdk {{ version = release({major}) {{ minorApiLevel = 0 }} }}"
+            )
+        return major, 0
+    errors.append("compileSdk not found in app/build.gradle.kts")
+    return None, None
+
+
+def sdk_platform_dir(major: int, minor: int) -> str:
+    """Name of the Android SDK platform package/directory (after 'platforms;').
+
+    Verified rule: up to API 36 the base level is 'android-36' and only minor releases carry a suffix
+    ('android-36.1'); from API 37 on every platform is minor-versioned, the base one is 'android-37.0'
+    and plain 'android-37' does not exist in sdkmanager.
+    """
+    if major <= 36 and minor == 0:
+        return f"android-{major}"
+    return f"android-{major}.{minor}"
+
+
 def workflow_jobs(text: str) -> dict[str, str]:
     """Splits the workflow text into job bodies (2-space-indented keys under `jobs:`)."""
     body = text.split("\njobs:\n", 1)[1]
@@ -139,9 +169,19 @@ def check_workflow_and_versions():
         "NDK_VERSION": (re.search(r'val rpxNdkVersion = "([^"]+)"', read("app/build.gradle.kts")) or [None, None])[1],
         "GRADLE_VERSION": (re.search(r"gradle-([\d.]+)-bin\.zip", read("gradle/wrapper/gradle-wrapper.properties")) or [None, None])[1],
     }
-    compile_sdk = re.search(r"compileSdk = (\d+)", read("app/build.gradle.kts"))
-    if compile_sdk:
-        pins["PLATFORM"] = f"android-{compile_sdk.group(1)}"
+    gradle = read("app/build.gradle.kts")
+    major, minor = parse_compile_sdk(gradle)
+    if major is not None:
+        pins["PLATFORM"] = sdk_platform_dir(major, minor)
+        platform_package = f"platforms;{sdk_platform_dir(major, minor)}"
+        if platform_package not in read("docs/VERSIONS.md"):
+            errors.append(f"docs/VERSIONS.md must mention the SDK package '{platform_package}'")
+        target = re.search(r"targetSdk = (\d+)", gradle)
+        min_sdk = re.search(r"minSdk = (\d+)", gradle)
+        if target and int(target.group(1)) > major:
+            errors.append(f"targetSdk {target.group(1)} is higher than compileSdk {major}")
+        if target and min_sdk and int(min_sdk.group(1)) > int(target.group(1)):
+            errors.append("minSdk is higher than targetSdk")
     for key, expected in pins.items():
         if env.get(key) != expected:
             errors.append(f"workflow env {key}={env.get(key)!r} but the project pins {expected!r}")
@@ -177,6 +217,9 @@ def check_workflow_and_versions():
         if needed not in boot[upload:upload + 400]:
             errors.append(f"bootstrap-files artifact does not include {needed}")
     android = jobs["android"]
+    for needed in ("Failed to find package", "--list_installed", 'platforms;${PLATFORM}'):
+        if needed not in android:
+            errors.append(f"android job must verify SDK installation (missing: {needed})")
     if "./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace" not in android:
         errors.append("android job must build with ./gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace")
     if re.search(r"^\s*(?:run:\s*|script:\s*)?gradle\s+:", wf, re.M):
@@ -186,6 +229,61 @@ def check_workflow_and_versions():
     verify_script = read("scripts/verify-apk-permissions.sh")
     if re.search(r"aapt2\"?[^\n]*\|\|\s*true", verify_script):
         errors.append("verify-apk-permissions.sh must not ignore aapt2 failures with '|| true'")
+
+
+def check_naming():
+    """Product name, package and old-name hygiene (the old name may live only in docs/NAMING.md)."""
+    gradle = read("app/build.gradle.kts")
+    namespace = (re.search(r'namespace\s*=\s*"([^"]+)"', gradle) or [None, None])[1]
+    app_id = (re.search(r'applicationId\s*=\s*"([^"]+)"', gradle) or [None, None])[1]
+    if not namespace or not app_id:
+        errors.append("namespace/applicationId not found in app/build.gradle.kts")
+        return
+    for locale in ("values", "values-ru"):
+        name = re.search(r'name="app_name">([^<]*)<', read(f"app/src/main/res/{locale}/strings.xml"))
+        if not name or name.group(1) != "Wolf Paint DZ":
+            errors.append(f"app_name in {locale}/strings.xml must be 'Wolf Paint DZ'")
+    if 'android:label="@string/app_name"' not in read("app/src/main/AndroidManifest.xml"):
+        errors.append("manifest application label must be @string/app_name")
+    if not re.search(r'rootProject\.name = "wolf-paint-dz"', read("settings.gradle.kts")):
+        errors.append('settings.gradle.kts: rootProject.name must be "wolf-paint-dz"')
+    pkg_dir = Path("app/src") / "main" / "kotlin" / namespace.replace(".", "/")
+    if not (ROOT / pkg_dir).is_dir():
+        errors.append(f"Kotlin sources are not in the namespace directory {pkg_dir}")
+    for f in kotlin_sources():
+        m = re.search(r"^package ([\w.]+)", Path(f).read_text(encoding="utf-8"), re.M)
+        if not m or not m.group(1).startswith(namespace):
+            errors.append(f"{os.path.relpath(f, ROOT)}: package {m.group(1) if m else '?'} is outside {namespace}")
+    mangled = namespace.replace(".", "_")
+    if f"Java_{mangled}_core_RustBridge_" not in read("crates/core-ffi/src/jni_bridge.rs"):
+        errors.append(f"jni_bridge.rs exports do not use the namespace prefix Java_{mangled}_core_RustBridge_")
+    expected_prefix = namespace.replace(".", "/") + "/core/RpxNativeException$"
+    class_consts = re.findall(r'"([^"]*RpxNativeException\$\w+)"', read("crates/core-ffi/src/lib.rs"))
+    if not class_consts:
+        errors.append("no exception class constants found in crates/core-ffi/src/lib.rs")
+    for const in class_consts:
+        if not const.startswith(expected_prefix):
+            errors.append(f"core-ffi exception class '{const}' does not start with '{expected_prefix}'")
+    if namespace.replace(".", "/") not in read("app/proguard-rules.pro").replace(".", "/"):
+        errors.append("app/proguard-rules.pro does not reference the namespace")
+    # Built from parts so that this file itself does not contain the old name.
+    old = re.compile("rpx" + "[ _-]?" + "paint", re.I)
+    skip_dirs = {".git", "build", "target", ".gradle", "__pycache__"}
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or skip_dirs & set(path.relative_to(ROOT).parts):
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        if rel == "docs/NAMING.md":
+            continue
+        if old.search(rel):
+            errors.append(f"old product name in file path: {rel}")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if old.search(line):
+                errors.append(f"{rel}:{n}: old product name: {line.strip()[:90]}")
 
 
 def check_reproducibility_files():
@@ -201,7 +299,7 @@ def check_reproducibility_files():
 
 
 for check in (check_xml, check_catalog, check_resources, check_exceptions, check_offline, check_cargo,
-              check_workflow_and_versions, check_reproducibility_files):
+              check_workflow_and_versions, check_naming, check_reproducibility_files):
     check()
 
 for w in warnings:

@@ -116,7 +116,7 @@ abstract class VerifyNoInternetTask : DefaultTask() {
         )
         if ("android.permission.INTERNET" in permissions) {
             throw GradleException(
-                "The merged AndroidManifest requests android.permission.INTERNET. RPX Paint is " +
+                "The merged AndroidManifest requests android.permission.INTERNET. Wolf Paint DZ is " +
                     "offline-only; find the dependency that adds it with " +
                     "'./gradlew :app:dependencies' and the Manifest Merger report.",
             )
@@ -132,14 +132,21 @@ val keystoreProperties = Properties().apply {
 }
 
 android {
-    namespace = "com.rpxpaint.app"
-    compileSdk = 37
+    namespace = "com.dzekiwolf.wolfpaintdz"
+    // Compose 1.12+ requires compileSdk 37. API 37 is published by sdkmanager ONLY as the
+    // minor-versioned package "platforms;android-37.0" (there is no "android-37"), so the
+    // structured form is used. targetSdk deliberately stays 36.
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
+        }
+    }
     ndkVersion = rpxNdkVersion
 
     defaultConfig {
         // applicationId may be changed freely; `namespace` (Kotlin package) must stay in sync
         // with the JNI function names in crates/core-ffi (see README).
-        applicationId = "com.rpxpaint.app"
+        applicationId = "com.dzekiwolf.wolfpaintdz"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

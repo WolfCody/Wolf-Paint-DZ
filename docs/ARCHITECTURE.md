@@ -1,4 +1,4 @@
-# RPX Paint architecture (stage 1)
+# Wolf Paint DZ architecture (stage 1)
 
 ## Decisions
 

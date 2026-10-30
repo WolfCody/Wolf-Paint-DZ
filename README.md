@@ -1,4 +1,4 @@
-# RPX Paint (stage 1: skeleton with a Kotlin <-> Rust bridge)
+# Wolf Paint DZ (stage 1: skeleton with a Kotlin <-> Rust bridge)
 
 Offline drawing app for Android: Kotlin + Jetpack Compose UI, graphics logic in Rust.
 Raster and vector document modes exist as *configuration*; **there is no drawing yet**.
@@ -14,7 +14,7 @@ Tiles/pixel storage, brushes, GPU canvas (wgpu), layers, undo/redo, vector objec
 ## First reproducible build (read this first)
 The repository does not yet contain `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar` and `Cargo.lock`: they must be produced by the real tools, not written by hand.
 
-**Option A: GitHub Actions (no local setup).** Push the repo, open Actions -> `android` -> Run workflow. The independent `bootstrap` job reuses or generates `Cargo.lock` and the Gradle wrapper and uploads them as the artifact **`bootstrap-files`** *before* any test or build can fail. The `rust` and `android` jobs download exactly that artifact (they never resolve dependencies or generate the wrapper on their own), run `check_project_consistency.py --strict`, and the build goes through `./gradlew`. Other artifacts: `rpx-paint-debug-apk`, `unit-test-reports`. Tick `run_instrumented` for emulator tests (slow). Unpack `bootstrap-files` into the repo root, then `chmod +x gradlew` (artifacts drop the executable bit) and commit: `git add --chmod=+x gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar Cargo.lock`.
+**Option A: GitHub Actions (no local setup).** Push the repo, open Actions -> `Wolf Paint DZ CI` -> Run workflow. The independent `bootstrap` job reuses or generates `Cargo.lock` and the Gradle wrapper and uploads them as the artifact **`bootstrap-files`** *before* any test or build can fail. The `rust` and `android` jobs download exactly that artifact (they never resolve dependencies or generate the wrapper on their own), run `check_project_consistency.py --strict`, and the build goes through `./gradlew`. Other artifacts: `wolf-paint-dz-debug-apk` (the file `wolf-paint-dz-debug.apk`), `unit-test-reports`. Tick `run_instrumented` for emulator tests (slow). Unpack `bootstrap-files` into the repo root, then `chmod +x gradlew` (artifacts drop the executable bit) and commit: `git add --chmod=+x gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar Cargo.lock`.
 
 **Option B: locally.**
 ```bash
@@ -26,7 +26,7 @@ The script works in two stages (installed Gradle writes the wrapper, then the ge
 Once `Cargo.lock` is committed, the Gradle task passes `--locked` to cargo.
 
 ## Requirements (local)
-Android Studio with AGP 9.3 support, JDK 17, Android SDK Platform 36, Build Tools 36.0.0, NDK 28.2.13676358, rustup (the toolchain 1.99.1 and Android targets install from `rust-toolchain.toml`), `cargo install cargo-ndk --version 4.1.2 --locked`. Versions and reasons: `docs/VERSIONS.md`.
+Android Studio with AGP 9.3 support, JDK 17, Android SDK Platform 37.0 (sdkmanager package `platforms;android-37.0`; there is no `android-37`), Build Tools 36.0.0, NDK 28.2.13676358, rustup (the toolchain 1.99.1 and Android targets install from `rust-toolchain.toml`), `cargo install cargo-ndk --version 4.1.2 --locked`. Versions and reasons: `docs/VERSIONS.md`.
 
 ## Commands
 ```bash
@@ -43,9 +43,9 @@ Windows: use `.\gradlew.bat`. ABIs: `rpx.rustAbis` in `gradle.properties` (defau
 
 ## Release signing
 ```bash
-keytool -genkeypair -v -keystore rpx-release.jks -alias rpx -keyalg RSA -keysize 4096 -validity 10000
+keytool -genkeypair -v -keystore wolf-paint-dz-release.jks -alias wolfpaintdz -keyalg RSA -keysize 4096 -validity 10000
 ```
-Create `keystore.properties` in the repo root (git-ignored): `storeFile=rpx-release.jks`, `storePassword=...`, `keyAlias=rpx`, `keyPassword=...`. Then `./gradlew :app:assembleRelease`. Without the file the release APK is unsigned. R8 is on; JNI keep rules are in `app/proguard-rules.pro`. The legacy `isMinifyEnabled` DSL is used (AGP 9.3 documents it as still supported; the new `optimization {}` block is a later migration).
+Create `keystore.properties` in the repo root (git-ignored): `storeFile=wolf-paint-dz-release.jks`, `storePassword=...`, `keyAlias=wolfpaintdz`, `keyPassword=...`. Then `./gradlew :app:assembleRelease`. Without the file the release APK is unsigned. R8 is on; JNI keep rules are in `app/proguard-rules.pro`. The legacy `isMinifyEnabled` DSL is used (AGP 9.3 documents it as still supported; the new `optimization {}` block is a later migration).
 
 ## Verifying there is no network access
 1. Automatic: `verifyNoInternetDebug|Release` parses the **merged** manifest and fails on INTERNET (hooked into `assemble*`/`bundle*`).
@@ -63,7 +63,10 @@ scripts/             static checks, wrapper generators, APK permission check
 .github/workflows/   android.yml
 docs/                ARCHITECTURE.md, VERSIONS.md
 ```
-`applicationId` may be changed freely. The Kotlin package `com.rpxpaint.app` is part of the JNI names in `crates/core-ffi`; rename both together and re-run `check_jni_symbols.py`.
+`applicationId` may be changed freely. The Kotlin package `com.dzekiwolf.wolfpaintdz` is part of the JNI names in `crates/core-ffi`; rename both together and re-run `check_jni_symbols.py`.
+
+## Naming
+Product name, identifiers and the technical names that keep `rpx` (file format, engine): `docs/NAMING.md`.
 
 ## .rpx
 Planned for stage 6; example manifests will come from the real writer and be tested there.

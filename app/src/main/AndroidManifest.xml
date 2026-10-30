@@ -2,18 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-        Deliberately no <uses-permission> elements: RPX Paint is offline-only.
+        Deliberately no <uses-permission> elements: Wolf Paint DZ is offline-only.
         The merged manifest is verified at build time (task verifyNoInternet<Variant>).
     -->
 
     <application
-        android:name=".RpxApplication"
+        android:name=".WolfPaintApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Rpx">
+        android:theme="@style/Theme.WolfPaint">
 
         <activity
             android:name=".MainActivity"

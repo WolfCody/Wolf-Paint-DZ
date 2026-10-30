@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">RPX Paint</string>
+    <string name="app_name">Wolf Paint DZ</string>
     <string name="gallery_title">Gallery</string>
 
     <string name="engine_title">Rust engine</string>

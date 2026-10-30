@@ -10,9 +10,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-KOTLIN = ROOT / "app/src/main/kotlin/com/rpxpaint/app/core/RustBridge.kt"
+GRADLE = ROOT / "app/build.gradle.kts"
 RUST = ROOT / "crates/core-ffi/src/jni_bridge.rs"
-PACKAGE = "com.rpxpaint.app.core"
+# The JNI package comes from the Gradle namespace, so renaming the app cannot leave a stale constant here.
+PACKAGE = re.search(r'namespace\s*=\s*"([^"]+)"', GRADLE.read_text(encoding="utf-8")).group(1) + ".core"
+KOTLIN = ROOT / "app/src/main/kotlin" / PACKAGE.replace(".", "/") / "RustBridge.kt"
 CLASS = "RustBridge"
 
 PARAM_TYPES = {"String": "JString", "Int": "jint", "Long": "jlong"}
