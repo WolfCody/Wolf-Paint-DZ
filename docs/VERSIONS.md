@@ -6,7 +6,7 @@
 | Gradle | 9.5.0 | Minimum and default for AGP 9.3. Kotlin 2.4.0 is documented as compatible with 9.5.0. Newer Gradle (9.8.x exists) is not needed. |
 | Kotlin / Compose compiler plugin | 2.4.0 | Released June 2026, compatible with Gradle 9.5.0. The Compose compiler plugin version equals the Kotlin version. |
 | Kotlin plugin for Android | not applied | AGP 9 has built-in Kotlin; applying `org.jetbrains.kotlin.android` is an error. |
-| compileSdk / targetSdk / minSdk | 36 / 36 / 26 | AGP 9.3 supports up to 37; 36 chosen as the conservative stable level. minSdk 26 as required. |
+| compileSdk / targetSdk / minSdk | 37 / 36 / 26 | AGP 9.3 supports up to 37; 36 chosen as the conservative stable level. minSdk 26 as required. |
 | Build Tools | 36.0.0 | AGP 9.3 default. |
 | NDK | 28.2.13676358 | AGP default. r28+ aligns ELF segments to 16 KB (cargo-ndk also passes `max-page-size=16384`). |
 | JDK | 17 | AGP minimum; bytecode target 17. |

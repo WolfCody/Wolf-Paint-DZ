@@ -133,7 +133,7 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "com.rpxpaint.app"
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = rpxNdkVersion
 
     defaultConfig {
