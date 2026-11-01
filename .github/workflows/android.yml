@@ -5,7 +5,13 @@
 #              the artifact `bootstrap-files` BEFORE anything can fail. rust/android never generate
 #              these files themselves: they download exactly this artifact.
 #   rust       static checks (strict), host tests, Android target check
-#   android    unit tests + debug APK through ./gradlew, APK permission check
+#   android    unit tests + debug APK through ./gradlew, APK checks, then an unsigned R8 release build with
+#              permission / 16 KB alignment / JNI export / R8 keep checks (opt-in emulator tests at the end)
+#   supply-chain  cargo-deny (bans, licenses, sources) with the policy in deny.toml; advisories informational
+#
+# Third-party actions are pinned to full commit SHAs (`# vX.Y.Z` names the release; scripts/verify_action_pins.py
+# checks the pins and, in the bootstrap job, that every SHA really is that release). actions/* (owned by GitHub)
+# use release tags. See docs/CI.md.
 #
 # Versions below must match rust-toolchain.toml, app/build.gradle.kts, gradle-wrapper.properties and
 # docs/VERSIONS.md; scripts/check_project_consistency.py enforces it.
@@ -32,13 +38,18 @@ env:
   BUILD_TOOLS_VERSION: "36.0.0"
   PLATFORM: "android-37.0"
   GRADLE_VERSION: "9.5.0"
+  CARGO_DENY_VERSION: "0.20.2"
 
 jobs:
   bootstrap:
     name: Bootstrap (Cargo.lock + Gradle wrapper)
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+
+      - name: Third-party action pins match their release tags
+        run: python3 scripts/verify_action_pins.py --online
 
       - uses: actions/setup-java@v5
         with:
@@ -62,9 +73,11 @@ jobs:
           test -s Cargo.lock
 
       # Gradle is installed here ONLY so that scripts/generate-wrapper.sh has a `gradle` to run.
-      - uses: gradle/actions/setup-gradle@v6
+      # cache-provider: basic = the MIT-licensed cache; the v6 default is a proprietary component with separate terms.
+      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-provider: basic
 
       - name: Gradle wrapper (reuse committed, else generate with the two-stage script)
         run: |
@@ -104,7 +117,8 @@ jobs:
             echo "### Bootstrap files"
             echo "Download the artifact **bootstrap-files** and commit its contents to the repository root:"
             echo '```'
-            echo "git add --chmod=+x gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar Cargo.lock"
+            echo "git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar Cargo.lock"
+            echo "git update-index --chmod=+x gradlew"
             echo '```'
             echo "Artifacts do not keep the executable bit; \`chmod +x gradlew\` after unpacking."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -113,6 +127,7 @@ jobs:
     name: Rust (host tests + Android target check)
     needs: bootstrap
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -128,6 +143,8 @@ jobs:
           test -s Cargo.lock && test -f gradle/wrapper/gradle-wrapper.jar
           python3 scripts/check_jni_symbols.py
           python3 scripts/check_project_consistency.py --strict
+          python3 scripts/check_lock_policy.py
+          python3 -m unittest discover -s scripts/tests
           scripts/test_verify_apk_permissions.sh
 
       - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
@@ -154,6 +171,7 @@ jobs:
     name: Wolf Paint DZ debug APK
     needs: bootstrap
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -217,8 +235,11 @@ jobs:
           echo "SDK packages verified: ${PACKAGES[*]}"
 
       # No gradle-version here: the build must run through the generated wrapper, not a Gradle
-      # installed by the action or preinstalled on the runner image. This step only adds caching.
-      - uses: gradle/actions/setup-gradle@v6
+      # installed by the action or preinstalled on the runner image. This step only adds caching
+      # (basic = MIT-licensed provider, see the bootstrap job).
+      - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
+        with:
+          cache-provider: basic
 
       - name: Gradle wrapper version
         run: |
@@ -238,6 +259,7 @@ jobs:
           ls -l "$APK"
           unzip -l "$APK" | grep "librpx_core.so"
           AAPT2="${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}/aapt2" scripts/verify-apk-permissions.sh "$APK"
+          python3 scripts/check_apk_native.py "$APK"
 
       # Gradle's output name stays app-debug.apk; the delivered file gets the product name.
       - name: Name the APK
@@ -256,6 +278,34 @@ jobs:
           path: app/build/reports/tests/
           if-no-files-found: ignore
 
+      # ---- Release variant: unsigned, R8 on (signing is a later stage). Runs after the debug artifacts are
+      # uploaded, so a failure here never hides the debug APK.
+      - name: Release build (unsigned, R8)
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Release APK, offline rule (no INTERNET, read by aapt2)
+        run: |
+          AAPT2="${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}/aapt2" \
+            scripts/verify-apk-permissions.sh app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Release APK, 16 KB zip alignment (zipalign)
+        run: |
+          "${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}/zipalign" -c -P 16 -v 4 \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Release APK, native library (ELF 16 KB, stored, JNI exports)
+        run: python3 scripts/check_apk_native.py app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Release build, R8 keeps the JNI classes and methods
+        run: python3 scripts/check_r8_keep.py app/build/outputs/mapping/release
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: r8-mapping-release
+          path: app/build/outputs/mapping/release/
+          if-no-files-found: ignore
+
       - name: Enable KVM for the emulator
         if: ${{ inputs.run_instrumented }}
         run: |
@@ -265,7 +315,7 @@ jobs:
 
       - name: Instrumented tests (emulator, x86_64)
         if: ${{ inputs.run_instrumented }}
-        uses: reactivecircus/android-emulator-runner@v2
+        uses: reactivecircus/android-emulator-runner@1dcd0090116d15e7c562f8db72807de5e036a4ed # v2.34.0
         with:
           api-level: 34
           arch: x86_64
@@ -279,3 +329,49 @@ jobs:
           name: instrumented-test-reports
           path: app/build/reports/androidTests/
           if-no-files-found: ignore
+
+  supply-chain:
+    name: Supply chain (cargo-deny)
+    needs: bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get the bootstrap files (the single Cargo.lock and wrapper)
+        uses: actions/download-artifact@v8
+        with:
+          name: bootstrap-files
+          path: .
+
+      - name: Offline lock-file policy (banned crates, sources)
+        run: |
+          test -s Cargo.lock
+          python3 scripts/check_lock_policy.py
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+
+      - name: Cache cargo-deny
+        id: cargo-deny-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install cargo-deny ${{ env.CARGO_DENY_VERSION }}
+        if: steps.cargo-deny-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked
+
+      # The lock file must already be in sync with the manifests; cargo-deny must not decide that for us.
+      - name: Cargo.lock is in sync with the manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: cargo deny check bans licenses sources
+        run: cargo deny check bans licenses sources
+
+      # Informational only: the RustSec database changes daily and its format can outpace the pinned
+      # cargo-deny, so a red advisory check must not block unrelated work. Read the output.
+      - name: cargo deny check advisories (informational)
+        continue-on-error: true
+        run: cargo deny check advisories

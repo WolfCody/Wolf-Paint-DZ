@@ -10,3 +10,7 @@ keystore.properties
 *.keystore
 .DS_Store
 # Cargo.lock is NOT ignored: commit it after the first `cargo generate-lockfile`.
+
+# Python
+__pycache__/
+*.py[cod]

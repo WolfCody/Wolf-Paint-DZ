@@ -1,0 +1,74 @@
+# cargo-deny policy for Wolf Paint DZ (run in CI by the `supply-chain` job with cargo-deny 0.20.2).
+# Field names follow the cargo-deny 0.20 documentation (https://embarkstudios.github.io/cargo-deny/).
+# Not executed in the authoring sandbox: the first CI run is the real validation (docs/CI.md explains
+# how to react to a failure).
+#
+# What this file enforces: crates.io as the only source, permissive licenses, and a DENY-LIST of well-known
+# network, TLS and telemetry crates. A deny-list is not a proof that no dependency can open a socket:
+# a crate that is not on the list is not examined. The offline guarantee rests on all the checks together
+# (docs/CI.md, section "What the offline checks do and do not prove").
+
+[graph]
+# Only what is shipped in the APK. Windows/macOS-only dependencies of build helpers are not judged.
+targets = [
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+    "armv7-linux-androideabi",
+]
+
+[licenses]
+# SPDX identifiers. An "A OR B" crate license passes when one alternative is allowed
+# (e.g. "Unlicense OR MIT" passes through MIT). "Unicode-3.0" covers unicode-ident.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# Unpublished workspace crates (core-model, core-ffi have publish = false) carry no license field.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between our own unpublished workspace crates have no version requirement.
+allow-wildcard-paths = true
+
+# Network stacks, TLS and telemetry have no place in an offline-only app. A hit here means a new
+# dependency pulled one in: find it with `cargo tree -i <crate>` and drop or replace that dependency.
+deny = [
+    { crate = "reqwest", reason = "offline-only app: no HTTP client" },
+    { crate = "hyper", reason = "offline-only app: no HTTP stack" },
+    { crate = "hyper-util", reason = "offline-only app: no HTTP stack" },
+    { crate = "h2", reason = "offline-only app: no HTTP stack" },
+    { crate = "ureq", reason = "offline-only app: no HTTP client" },
+    { crate = "attohttpc", reason = "offline-only app: no HTTP client" },
+    { crate = "isahc", reason = "offline-only app: no HTTP client" },
+    { crate = "surf", reason = "offline-only app: no HTTP client" },
+    { crate = "curl", reason = "offline-only app: no HTTP client" },
+    { crate = "curl-sys", reason = "offline-only app: no HTTP client" },
+    { crate = "tokio", reason = "offline-only app: async network runtime not needed" },
+    { crate = "tokio-rustls", reason = "offline-only app: no TLS" },
+    { crate = "native-tls", reason = "offline-only app: no TLS" },
+    { crate = "rustls", reason = "offline-only app: no TLS" },
+    { crate = "openssl", reason = "offline-only app: no TLS" },
+    { crate = "openssl-sys", reason = "offline-only app: no TLS" },
+    { crate = "sentry", reason = "no telemetry or crash reporting services" },
+    { crate = "sentry-core", reason = "no telemetry or crash reporting services" },
+    { crate = "opentelemetry", reason = "no telemetry" },
+]
+
+# New in cargo-deny 0.20: flags crates.io crates that std/core now (partly) replace, such as `once_cell`
+# (a dependency of android_logger, which this project cannot change). The built-in default level is "deny";
+# it is set explicitly so that a hygiene finding in a transitive dependency does not block the gate. The
+# findings stay visible as warnings in the log. This is not an offline or security rule.
+[bans.std-replacements]
+level = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

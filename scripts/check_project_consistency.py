@@ -16,6 +16,10 @@ import tomllib
 import xml.dom.minidom
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_lock_policy  # noqa: E402
+import verify_action_pins  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 errors: list[str] = []
 warnings: list[str] = []
@@ -286,6 +290,91 @@ def check_naming():
                 errors.append(f"{rel}:{n}: old product name: {line.strip()[:90]}")
 
 
+def check_hardening():
+    """Stage 2.0: release/R8/16 KB checks, supply chain policy, action pins, required docs."""
+    wf = read(".github/workflows/android.yml")
+    jobs = workflow_jobs(wf)
+    for needed in ("supply-chain",):
+        if needed not in jobs:
+            errors.append(f"workflow job '{needed}' is missing")
+            return
+    android = jobs["android"]
+    for needed, why in (
+        ("./gradlew :app:assembleRelease", "unsigned release build with R8"),
+        ("app-release-unsigned.apk", "release APK checks"),
+        ("zipalign", "16 KB zip alignment of the release APK"),
+        ("-c -P 16", "zipalign must check with -P 16"),
+        ("scripts/check_apk_native.py", "native library / ELF / JNI export check"),
+        ("scripts/check_r8_keep.py", "R8 keep check"),
+        ("scripts/verify-apk-permissions.sh", "aapt2 permission check"),
+    ):
+        if needed not in android:
+            errors.append(f"android job is missing '{needed}' ({why})")
+    if android.count("scripts/verify-apk-permissions.sh") < 2:
+        errors.append("android job must run verify-apk-permissions.sh for both the debug and the release APK")
+    if android.count("scripts/check_apk_native.py") < 2:
+        errors.append("android job must run check_apk_native.py for both the debug and the release APK")
+
+    uses_gradle = re.findall(r"uses: gradle/actions/setup-gradle@\S+[^\n]*\n(?:\s+with:\n(?:\s+[\w-]+:[^\n]*\n)*)?", wf)
+    if not uses_gradle:
+        errors.append("no setup-gradle step found")
+    for block in uses_gradle:
+        if "cache-provider: basic" not in block:
+            errors.append("every setup-gradle step must set 'cache-provider: basic' (open-source cache provider)")
+
+    deny_job = jobs["supply-chain"]
+    for needed in ("cargo deny check bans licenses sources", "cargo metadata --locked", "scripts/check_lock_policy.py",
+                   "cargo install cargo-deny --version"):
+        if needed not in deny_job:
+            errors.append(f"supply-chain job is missing '{needed}'")
+    adv = deny_job[deny_job.find("check advisories"):] if "check advisories" in deny_job else ""
+    if "continue-on-error: true" not in adv:
+        errors.append("the advisories check must be explicitly informational (continue-on-error: true) and the only such step")
+    if wf.count("continue-on-error") != 1:
+        errors.append("continue-on-error may only be used once (the informational advisories step)")
+    if "needs: bootstrap" not in deny_job:
+        errors.append("supply-chain job must depend on bootstrap")
+    if "verify_action_pins.py --online" not in jobs["bootstrap"]:
+        errors.append("bootstrap must run verify_action_pins.py --online")
+
+    pin_errors, pinned = verify_action_pins.check_structure(ROOT)
+    errors.extend(pin_errors)
+    if len(pinned) < 2:
+        errors.append("expected at least two pinned third-party actions (setup-gradle, android-emulator-runner)")
+
+    deny = tomllib.loads(read("deny.toml"))
+    if deny["sources"].get("unknown-registry") != "deny" or deny["sources"].get("unknown-git") != "deny":
+        errors.append("deny.toml: unknown-registry and unknown-git must be 'deny'")
+    if not isinstance(deny["bans"].get("deny"), list) or len(deny["bans"]["deny"]) < 10:
+        errors.append("deny.toml: [bans] deny list is missing (a key written after a sub-table header such as "
+                      "[bans.std-replacements] belongs to that sub-table; keep sub-tables after the plain keys)")
+    if set(deny["bans"].get("std-replacements", {})) - {"level", "scope", "ignore", "ignore-rust-version", "rust-version"}:
+        errors.append("deny.toml: unexpected keys inside [bans.std-replacements]")
+    if deny["bans"].get("std-replacements", {}).get("level") not in ("warn", "deny"):
+        errors.append("deny.toml: [bans.std-replacements] level must be set explicitly (cargo-deny 0.20 defaults to deny)")
+    if not deny["graph"].get("targets"):
+        errors.append("deny.toml: [graph] targets must list the shipped Android targets")
+    cargo_deny_env = re.search(r'CARGO_DENY_VERSION: "([^"]+)"', wf)
+    if not cargo_deny_env or cargo_deny_env.group(1) not in read("docs/VERSIONS.md"):
+        errors.append("docs/VERSIONS.md must mention the CARGO_DENY_VERSION used by the workflow")
+    for sha, tag in sorted(set(re.findall(r"@([0-9a-f]{40}) # (v[\d.]+)", wf))):
+        if sha not in read("docs/VERSIONS.md") or tag not in read("docs/VERSIONS.md"):
+            errors.append(f"docs/VERSIONS.md must list the pinned action {tag} ({sha})")
+
+    if (ROOT / "Cargo.lock").is_file():
+        lock_errors, _ = check_lock_policy.check(read("Cargo.lock"), read("deny.toml"))
+        errors.extend(lock_errors)
+    ci_doc = read("docs/CI.md") if (ROOT / "docs/CI.md").is_file() else ""
+    for phrase in ("A deny-list is not a proof", "What the offline checks do and do not prove", "fixed list of well-known"):
+        if phrase not in ci_doc:
+            errors.append(f"docs/CI.md must keep the statement '{phrase}' (limits of the offline checks)")
+    if "deny-list" not in read("deny.toml") and "DENY-LIST" not in read("deny.toml"):
+        errors.append("deny.toml header must say that its ban list is a deny-list, not a proof")
+    for doc in ("docs/CI.md", "docs/DEVICES.md", "docs/VERIFICATION.md", "docs/STAGE1_AUDIT.md", "docs/STAGE2_PLAN.md"):
+        if not (ROOT / doc).is_file():
+            errors.append(f"{doc} is missing")
+
+
 def check_reproducibility_files():
     missing = [p for p in ["gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar", "Cargo.lock"] if not (ROOT / p).exists()]
     props = read("gradle/wrapper/gradle-wrapper.properties")
@@ -299,7 +388,7 @@ def check_reproducibility_files():
 
 
 for check in (check_xml, check_catalog, check_resources, check_exceptions, check_offline, check_cargo,
-              check_workflow_and_versions, check_naming, check_reproducibility_files):
+              check_workflow_and_versions, check_naming, check_hardening, check_reproducibility_files):
     check()
 
 for w in warnings:

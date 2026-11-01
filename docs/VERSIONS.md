@@ -30,7 +30,25 @@
 
 ## CI action versions (GitHub Actions)
 
-checkout v7, setup-java v5, setup-gradle v6 (`gradle-version` input installs Gradle on PATH; used only in the bootstrap job), upload-artifact v7, download-artifact v8, cache v6 (all seen as current majors in 2026 release notes). `reactivecircus/android-emulator-runner@v2` is used only for the optional emulator job and its current version was **not** re-checked.
+GitHub-owned actions use release tags: checkout v7, setup-java v5, upload-artifact v7, download-artifact v8, cache v6.
+
+Third-party actions are pinned to full commit SHAs (policy and the way to update them: `docs/CI.md`):
+
+| Action | Release | Commit SHA | Where the SHA comes from |
+|---|---|---|---|
+| gradle/actions/setup-gradle | v6.1.0 | `50e97c2cd7a37755bbfafc9c5b7cafaece252f6e` | pinned in a merged public pull request (apache/grails-forge-ui #115); **not** resolved against GitHub by the author. CI verifies it with `git ls-remote` in the bootstrap job |
+| reactivecircus/android-emulator-runner | v2.34.0 | `1dcd0090116d15e7c562f8db72807de5e036a4ed` | Dependabot bump commit in getsentry/sentry-java (#4301); same CI verification |
+
+`setup-gradle` v6 changed its default cache to a proprietary component with separate terms of use; the project uses `cache-provider: basic` (MIT-licensed, built on `@actions/cache`) everywhere.
+
+## Supply-chain and APK tooling
+
+| Tool | Version | Notes |
+|---|---|---|
+| cargo-deny | 0.20.2 | Installed with `cargo install cargo-deny --version 0.20.2 --locked`; command `cargo deny check bans licenses sources` (the 0.20.0 CLI cleanup removed deprecated options and flags, none of which is used). Why not 0.19.x: 0.20.2 is the newest release seen in the upstream release notes and in the maintainers' action (cargo-deny-action v2.1.1 ships 0.20.2); 0.20.0 added the `bans.std-replacements` lint whose **built-in level is `deny`**, so `deny.toml` sets `[bans.std-replacements] level = "warn"` explicitly (otherwise `once_cell`, pulled in by `android_logger`, could fail the gate). 0.20.1 and 0.20.2 only fixed publishing of the Windows release binaries. Policy file: `deny.toml`, field names checked against the 0.20 documentation page for `bans` (`deny[].crate/reason`, `wildcards`, `allow-wildcard-paths`, `std-replacements.level`), `graph.targets`, `licenses.allow/private`, `sources`; `licenses.private` and `licenses.confidence-threshold` were not visible on the 0.20 pages and rely on the 0.19 documentation and on the 0.20 changelog listing no removal. Rust: cargo-deny 0.20.2 was released in July 2026 (Rust 1.97/1.98 era), so the project toolchain 1.99.1 is newer than anything it needs (inference; its exact MSRV was not looked up). **cargo-deny was not executed by the author**: neither the install nor the configuration is confirmed until the first CI run. The advisories check stays informational |
+| zipalign (Build Tools 36.0.0) | `-c -P 16 -v 4` | Official 16 KB alignment check (`-P` accepts 4, 16, 64) |
+| aapt2 (Build Tools 36.0.0) | `dump badging`, `dump permissions` | Read by `scripts/verify-apk-permissions.sh` |
+| 16 KB page size | Google Play: apps targeting API 35+ must support it on 64-bit devices; updates that do not are blocked from 2027-02-01 | `check_apk_native.py` checks ELF `PT_LOAD` alignment and zip alignment of `librpx_core.so` |
 
 ## Build status
 
