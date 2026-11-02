@@ -4,23 +4,22 @@ app/build/outputs/mapping/release/ : seeds.txt, mapping.txt and (if present) usa
 
 JNI binds a Java `native` method to the C symbol `Java_<class>_<method>` by the *names* of the class and of
 the method, so keeping the class is not enough. Names derive from the sources (namespace in
-app/build.gradle.kts, `external fun`s of RustBridge.kt, subclasses of RpxNativeException.kt) and are checked:
+app/build.gradle.kts, `external fun`s of RustBridge.kt, subclasses of RpxNativeException.kt):
 
-  1. seeds.txt   : RustBridge lists every native method with its exact signature; every RpxNativeException
-                   subclass lists <init>(java.lang.String) (Rust constructs them by name); the base class is kept.
-  2. mapping.txt : the class blocks are parsed. RustBridge, RpxNativeException and its subclasses map to their own
-                   name. Inside the RustBridge block EVERY native method has an entry whose original name equals
-                   the final name (a method renamed by R8, e.g. nativeInit -> a, is an error) and whose signature
-                   is the expected one. A native method without an entry is an error (removed, or not listed by R8).
-                   Lines inside the RustBridge block that are neither a member entry nor a comment are an error.
-  3. usage.txt   : none of those classes (nor RustBridge's native methods) appears as removed code.
-Fails closed: a missing seeds.txt/mapping.txt, a mapping without class blocks, or an unrecognized line in the
-RustBridge block is an error, never a success.
+  1. seeds.txt   (what the keep rules matched, i.e. what R8 must keep unrenamed):
+                 RustBridge lists EVERY native method with its exact signature; every RpxNativeException subclass
+                 lists its (String) constructor (Rust constructs them by name); the base class is kept.
+  2. mapping.txt (what R8 renamed): RustBridge, RpxNativeException and its subclasses map to their own name.
+                 R8 writes a member to mapping.txt only when it is renamed or carries line information, so a native
+                 method WITHOUT an entry is fine (it is proven kept by seeds.txt). A native method WITH an entry must
+                 keep its name (`nativeInit -> a` is an error) and its signature.
+  3. usage.txt   (what R8 removed): none of those classes (nor RustBridge's native methods) appears as removed code.
 
-The file formats follow the ProGuard manual (R8 writes the same ones); the logic is tested on samples written from
-that description. Whether R8 lists every unrenamed member in mapping.txt must be confirmed on the first real CI
-release build; if it omits them, this check will report "no entry" and the policy has to be revisited with a real
-mapping.txt in hand.
+Parsing follows the real R8 format: class names may contain `$`, `-` and any other non-blank characters (Kotlin
+mangles names such as `clickable-O2vRcR0`). Only lines that can be attributed to RustBridge are checked strictly;
+lines of other classes are skipped. Fails closed on: missing/empty seeds.txt or mapping.txt, a mapping without class
+blocks, a corrupt top-level line, a member line before any class block, an unrecognized line inside the RustBridge
+block. On failure, the relevant lines of the files are printed so that the format can be compared with the check.
 
 Usage: check_r8_keep.py app/build/outputs/mapping/release
 """
@@ -33,7 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 JAVA_TYPES = {"String": "java.lang.String", "Int": "int", "Long": "long", "LongArray": "long[]"}
 
-CLASS_LINE = re.compile(r"^([\w.$]+) -> ([\w.$]+):$")
+# `original.Name -> obfuscated.Name:`  (any non-blank characters: `$`, `-`, ...)
+CLASS_LINE = re.compile(r"^(?P<orig>\S+) -> (?P<obf>\S+):$")
 # [startLine:endLine:]returnType name(argTypes)[:origStart[:origEnd]] -> obfuscatedName
 METHOD_LINE = re.compile(
     r"^\s+(?:\d+:\d+:)?(?P<ret>\S+) (?P<name>[^\s(]+)\((?P<params>[^)]*)\)(?::\d+(?::\d+)?)? -> (?P<obf>\S+)$"
@@ -66,40 +66,58 @@ def signature(ret, params):
     return f"{ret} ({', '.join(params)})"
 
 
-def parse_mapping(lines):
-    """Returns (class_map, blocks, problems).
-    class_map: original class -> obfuscated class; blocks: original class -> list of member dicts
-    (kind 'method'/'field', original name, obfuscated name, ret/type, params) or unparsable markers."""
-    class_map, blocks, problems = {}, {}, []
+def context(lines, needle, limit=6):
+    """Lines of a file that mention `needle`, to show the real format next to an error."""
+    hits = [line.strip() for line in lines if needle in line]
+    shown = hits[:limit] + ([f"... {len(hits) - limit} more"] if len(hits) > limit else [])
+    return shown or ["(no line mentions it)"]
+
+
+def parse_mapping(lines, tracked):
+    """Single pass over mapping.txt.
+    Returns (class_map, members, problems).
+    class_map: original class -> obfuscated class (every class block);
+    members:   original class -> list of member dicts, only for classes in `tracked`;
+    problems:  (line number, text, why) for lines that cannot be attributed to anything valid."""
+    class_map, members, problems = {}, {c: [] for c in tracked}, []
     current = None
     for number, line in enumerate(lines, 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        header = CLASS_LINE.match(line)
-        if header:
-            current = header.group(1)
-            class_map[current] = header.group(2)
-            blocks[current] = []
-            continue
         if not line[0].isspace():
-            current = None
-            problems.append((None, number, line))
+            header = CLASS_LINE.match(line)
+            if header:
+                current = header.group("orig")
+                class_map[current] = header.group("obf")
+            else:
+                current = None
+                problems.append((number, line, "neither a class header nor a comment"))
             continue
         if current is None:
-            problems.append((None, number, line))
+            problems.append((number, line, "member line outside any class block"))
             continue
+        if current not in tracked:
+            continue  # members of unrelated classes are not our business
         m = METHOD_LINE.match(line)
         if m:
             params = [p.strip() for p in m.group("params").split(",") if p.strip()]
-            blocks[current].append({"kind": "method", "name": m.group("name"), "obf": m.group("obf"),
-                                    "ret": m.group("ret"), "params": params})
+            members[current].append({"kind": "method", "name": m.group("name"), "obf": m.group("obf"),
+                                     "ret": m.group("ret"), "params": params})
             continue
         f = FIELD_LINE.match(line)
         if f:
-            blocks[current].append({"kind": "field", "name": f.group("name"), "obf": f.group("obf"), "ret": f.group("type"), "params": []})
+            members[current].append({"kind": "field", "name": f.group("name"), "obf": f.group("obf"),
+                                     "ret": f.group("type"), "params": []})
             continue
-        problems.append((current, number, line))
-    return class_map, blocks, problems
+        problems.append((number, line, f"unrecognized member line in the {current} block"))
+    return class_map, members, problems
+
+
+def constructor_pattern(cls):
+    """`Class: <init>(java.lang.String)` or the ProGuard-style `Class: ShortName(java.lang.String)`."""
+    names = {"<init>", cls.rsplit(".", 1)[-1], cls.rsplit("$", 1)[-1]}
+    alternatives = "|".join(re.escape(n) for n in sorted(names))
+    return re.compile(rf"^{re.escape(cls)}: (?:void )?(?:{alternatives})\(java\.lang\.String\)$")
 
 
 def check_dir(mapping_dir: Path, exp):
@@ -107,53 +125,57 @@ def check_dir(mapping_dir: Path, exp):
     seeds, mapping, usage = (read(mapping_dir / n) for n in ("seeds.txt", "mapping.txt", "usage.txt"))
     if seeds is None:
         errors.append(f"{mapping_dir}/seeds.txt not found (release build with R8 required)")
+    elif not any(line.strip() for line in seeds):
+        errors.append("seeds.txt is empty")
     if mapping is None:
         errors.append(f"{mapping_dir}/mapping.txt not found (release build with R8 required)")
+    elif not any(line.strip() for line in mapping):
+        errors.append("mapping.txt is empty")
     if errors:
         return errors
 
     bridge, base, subs = exp["bridge"], exp["base"], exp["subclasses"]
+    seed_lines = [line.rstrip().replace(", ", ",") for line in seeds]
+    seed_set = set(seed_lines)
 
-    # 1. seeds
+    # 1. seeds: everything JNI needs is kept
     for name, (ret, params) in exp["natives"].items():
-        pat = re.compile(rf"^{re.escape(bridge)}: {re.escape(ret)} {re.escape(name)}\({re.escape(','.join(params))}\)$")
-        if not any(pat.match(line.replace(", ", ",")) for line in seeds):
-            errors.append(f"seeds.txt: native method {bridge}.{name} {signature(ret, params)} is not kept")
-    for cls in subs:
-        if not any(re.match(rf"^{re.escape(cls)}: <init>\(java\.lang\.String\)$", line) for line in seeds):
-            errors.append(f"seeds.txt: constructor (String) of {cls} is not kept")
-    if not any(line.strip() == base or line.startswith(base + ":") for line in seeds):
+        wanted = f"{bridge}: {ret} {name}({','.join(params)})"
+        if wanted not in seed_set:
+            errors.append(f"seeds.txt: native method {bridge}.{name} {signature(ret, params)} is not kept "
+                          f"(expected the line {wanted!r}); lines mentioning it: {context(seed_lines, name + '(')}")
+    if not any(line == base or line.startswith(base + ":") for line in seed_lines):
         errors.append(f"seeds.txt: {base} is not kept")
+    for cls in subs:
+        pattern = constructor_pattern(cls)
+        if not any(pattern.match(line) for line in seed_lines):
+            errors.append(f"seeds.txt: constructor (String) of {cls} is not kept; "
+                          f"lines mentioning the class: {context(seed_lines, cls + ':')}")
 
-    # 2. mapping
-    class_map, blocks, problems = parse_mapping(mapping)
+    # 2. mapping: no renaming of the classes, and no renamed native method
+    class_map, members, problems = parse_mapping(mapping, {bridge})
+    for number, line, why in problems[:20]:
+        errors.append(f"mapping.txt line {number}: {why}: {line.strip()[:100]!r}")
+    if len(problems) > 20:
+        errors.append(f"mapping.txt: {len(problems) - 20} more corrupt lines not shown")
     if not class_map:
         errors.append("mapping.txt: no class blocks could be parsed (unknown format?)")
         return errors
-    for owner, number, line in problems:
-        if owner is None or owner == bridge:  # lines of unrelated classes are not our business
-            errors.append(f"mapping.txt line {number}: unrecognized line {line.strip()[:80]!r}"
-                          + (f" in the {bridge} block" if owner else " outside any class block"))
     for cls in [bridge, base, *subs]:
         if cls not in class_map:
             errors.append(f"mapping.txt: {cls} is missing (removed by R8?)")
         elif class_map[cls] != cls:
             errors.append(f"mapping.txt: {cls} was renamed to {class_map[cls]} (JNI/native lookup would break)")
-
-    if bridge in blocks:
-        methods = [m for m in blocks[bridge] if m["kind"] == "method"]
-        for name, (ret, params) in exp["natives"].items():
-            entries = [m for m in methods if m["name"] == name]
-            if not entries:
-                errors.append(f"mapping.txt: {bridge}.{name} has no entry (removed by R8, or not listed by R8)")
-                continue
-            for m in entries:
-                if m["obf"] != name:
-                    errors.append(f"mapping.txt: native method {bridge}.{name} was renamed to {m['obf']} "
-                                  f"(JNI symbol Java_..._{name} would no longer bind)")
-                if (m["ret"], m["params"]) != (ret, params):
-                    errors.append(f"mapping.txt: {bridge}.{name} has signature {signature(m['ret'], m['params'])}, "
-                                  f"expected {signature(ret, params)}")
+    methods = [m for m in members[bridge] if m["kind"] == "method"]
+    for name, (ret, params) in exp["natives"].items():
+        # no entry = not renamed (R8 lists renamed members only); the seeds check above proves it was kept
+        for m in (m for m in methods if m["name"] == name):
+            if m["obf"] != name:
+                errors.append(f"mapping.txt: native method {bridge}.{name} was renamed to {m['obf']} "
+                              f"(JNI symbol Java_..._{name} would no longer bind)")
+            if (m["ret"], m["params"]) != (ret, params):
+                errors.append(f"mapping.txt: {bridge}.{name} has signature {signature(m['ret'], m['params'])}, "
+                              f"expected {signature(ret, params)}")
 
     # 3. usage (removed code), optional file
     if usage is not None:
@@ -170,6 +192,14 @@ def check_dir(mapping_dir: Path, exp):
     return errors
 
 
+def summary(mapping_dir: Path, exp):
+    mapping, seeds = read(mapping_dir / "mapping.txt") or [], read(mapping_dir / "seeds.txt") or []
+    class_map, members, _ = parse_mapping(mapping, {exp["bridge"]})
+    renamed_members = [m for m in members[exp["bridge"]] if m["obf"] != m["name"]]
+    return (f"mapping.txt: {len(class_map)} classes, {len(members[exp['bridge']])} RustBridge member entries "
+            f"({len(renamed_members)} renamed); seeds.txt: {len(seeds)} lines")
+
+
 def main(argv):
     if len(argv) != 1:
         print(__doc__)
@@ -180,7 +210,8 @@ def main(argv):
         print("FAILED:")
         print("\n".join(" - " + e for e in errors))
         return 1
-    print(f"R8 keeps OK: {exp['bridge']} ({len(exp['natives'])} native methods with their names and signatures), "
+    print(summary(Path(argv[0]), exp))
+    print(f"R8 keeps OK: {exp['bridge']} ({len(exp['natives'])} native methods kept with their names and signatures), "
           f"{exp['base']} and {len(exp['subclasses'])} subclasses are retained and not renamed")
     return 0
 

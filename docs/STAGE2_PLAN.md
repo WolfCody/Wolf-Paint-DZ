@@ -19,7 +19,7 @@ Rules for every sub-stage: own commit/PR, CI green before the next one starts, t
 ## 2.0 Hardening before features
 Done by the Stage 2.0 patch (written; first CI run pending):
 * `assembleRelease` (unsigned, R8) in CI, `verifyNoInternetRelease`, `aapt2` permission check on the release APK;
-* `check_r8_keep.py`: `RustBridge` natives and `RpxNativeException` subclasses kept and not renamed (reads AGP's `seeds.txt`, `mapping.txt`, `usage.txt`);
+* `check_r8_keep.py`: `RustBridge` natives (kept per `seeds.txt`, never renamed per `mapping.txt`) and `RpxNativeException` subclasses kept and not renamed (reads AGP's `seeds.txt`, `mapping.txt`, `usage.txt`); fixed after CI run #6 for the real R8 9.3.16 format (hyphenated class names, unchanged members absent from `mapping.txt`);
 * `check_apk_native.py` + `zipalign -c -P 16`: 16 KB zip alignment, ELF `PT_LOAD` alignment, uncompressed storage, JNI exports present, for the debug and the release APK;
 * `deny.toml` + `supply-chain` job (cargo-deny 0.20.2: bans, licenses, sources; advisories informational) + offline `check_lock_policy.py`;
 * third-party actions pinned to full SHAs, `cache-provider: basic`, online verification of the pins;
@@ -27,7 +27,7 @@ Done by the Stage 2.0 patch (written; first CI run pending):
 * `docs/CI.md`, `docs/DEVICES.md`, `docs/VERIFICATION.md`.
 
 Remaining Stage 2.0 tasks:
-1. Push the patch and read the first run. Expected possible findings: R8 file formats, a license not yet in `allow`, release lint. Fix what the logs show, not what is guessed.
+1. Read the next CI run. CI run #6: bootstrap, rust and supply-chain did not report errors; the android job failed at the R8 check only, after the release build, the aapt2 permission check, `zipalign -c -P 16` and the native-library check had passed (inferred from the step order, the logs need a GitHub login). Open: a license not yet in `allow`, release lint, the layout of the real `usage.txt`. Fix what the logs show, not what is guessed.
 2. Run the emulator job once (`run_instrumented`) and record the result.
 3. Fill the "to measure" cells of `docs/DEVICES.md` (Termux `getprop` list).
 4. Decide on blocking clippy (`-D warnings`) and add Android lint to CI.
