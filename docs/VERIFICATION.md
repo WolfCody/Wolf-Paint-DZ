@@ -1,33 +1,37 @@
-# Verification log (Stage 2.0 hardening, final)
+# Verification log (Stage 2.0, R8 check fix after CI run #6)
 
-Authoring sandbox: Python 3.12, bash, OpenJDK 21 (runtime only), xmllint, PyYAML, zip, readelf. **No** rustc/cargo, Gradle, Kotlin compiler, Android SDK/NDK, aapt2, zipalign, cargo-deny, emulator, PowerShell, or network (DNS fails). Everything below that needs those tools is **not executed** and waits for the first CI run.
+Authoring sandbox: Python 3.12, bash, git, OpenJDK 21 (runtime only), xmllint, PyYAML, zip, readelf. **No** rustc/cargo, Gradle, Kotlin compiler, Android SDK/NDK, aapt2, zipalign, cargo-deny, emulator, PowerShell. Network: only public GitHub pages could be fetched, not artifacts or logs.
+
+## What was and was not available from CI run #6 (commit efa5f70)
+| Source | Readable by the author? | What was learned |
+|---|---|---|
+| Run page `actions/runs/41290489356` | yes (public) | status Failure; exactly one error annotation: job "Wolf Paint DZ debug APK", **step 22** ("Process completed with exit code 1"); the four artifacts and their sizes |
+| Step 22 = `check_r8_keep.py` | derived from the workflow step order | the R8 check is the step that failed. Steps 18 to 21 ran before it, so the release build, the release aapt2 permission check, `zipalign -c -P 16` and `check_apk_native.py` on the release APK passed (inferred; their log lines were not seen) |
+| Jobs bootstrap, rust, supply-chain | no error annotation on the run page | inferred as passed; not confirmed by logs |
+| Artifacts `bootstrap-files`, `r8-mapping-release`, `unit-test-reports`, `wolf-paint-dz-debug-apk` | **no** (download needs a GitHub login; nothing was uploaded to the sandbox) | contents unknown. The maintainer's description is the only source about the real R8 files |
+| Step logs | no (login) | the exact error text of step 22 is unknown |
+
+## Cause of the R8 failure
+Reproduced with the previous checker (efa5f70) on a fixture built from the fragments the maintainer quoted (fixture seeds were incomplete, so only these two findings are valid evidence):
+1. **Class names:** the class-line regex accepted only `[\w.$]`; a real mapping line such as `androidx.compose.foundation.ClickableKt$clickable-O2vRcR0$$inlined$clickableWithIndicationIfNeeded$1 -> dh:` was reported as "unrecognized line outside any class block".
+2. **Wrong rule:** the checker demanded an entry in `mapping.txt` for every native method. R8 lists only renamed (or line-numbered) members, so unchanged native methods are absent. The correct evidence that they are kept is `seeds.txt`.
+Other causes cannot be excluded without the step log (for example how R8 prints the exception constructors in `seeds.txt`).
 
 ## Executed (real results)
-| Check | How | Result |
+| Check | Command | Result |
 |---|---|---|
-| Python tests of the check scripts | `python3 -m unittest discover -s scripts/tests` | **91 tests OK** (previous patch: 41; all 41 scenarios are kept: 18 unchanged, 23 in the two rewritten scripts kept or renamed) |
-| ELF / APK checker (`check_apk_native.py`) | 49 tests: HIDDEN, INTERNAL, PROTECTED, WEAK, LOCAL, SHN_UNDEF, reserved/out-of-range section index, non-FUNC type, symbol absent from `.dynsym`, symbol only in `.symtab`, name must match exactly; 21 malformed-ELF cases (truncation, table bounds, entry sizes, section indices, string-table bounds, unterminated names, duplicate `.dynsym`, `ET_EXEC`, PT_LOAD alignment/congruence/size/bounds, missing PT_LOAD, wrong machine for the ABI, 32-bit ELF in a 64-bit ABI) | each case ends as an APK-check **error**, none as a traceback |
-| Mutation testing of that checker | 23 mutations (one check disabled at a time, bytecode cache off) | every mutation is caught by exactly the tests that target it |
-| ELF parser on **real** linker output | libz and libc of the sandbox vs `readelf` (PT_LOAD align 0x1000, `inflate`/`malloc` valid exports, machine 62) | matches |
-| R8 keep checker (`check_r8_keep.py`) | 24 tests: `nativeInit -> a` (the case from the review), each native method renamed individually, missing method entry, wrong signature, malformed line in the RustBridge block, garbage outside blocks, missing/renamed class, seeds and usage cases, fail-closed on missing/unparsable files | pass/fail as expected; 8 mutations all caught |
-| The review scenario on the **real** project expectations | mapping generated from the real Kotlin sources, `nativeInit -> a` and a removed method | reported as errors |
-| Project consistency | `python3 scripts/check_project_consistency.py`; strict mode on a copy with placeholder wrapper/lock and a synthetic Cargo.lock | OK |
-| Regression checks of the consistency script | toml-ordering bug in `deny.toml` (see below), setup-gradle tag, missing `cache-provider`, zipalign without `-P 16`, missing R8 check, blocking advisories, missing cargo-deny step, relaxed `unknown-registry`, toolchain drift | each detected |
-| Action pins | `python3 scripts/verify_action_pins.py` (structure) + tests with a fake `git` for the online mode | OK; real online resolution not run |
-| `verify-apk-permissions.sh` | `scripts/test_verify_apk_permissions.sh` (fake aapt2) | 10/10 |
-| Offline-policy statements | consistency script requires the limits statements in `docs/CI.md` and in the `deny.toml` header | OK |
-| `compileall`, YAML parse, `bash -n`, XML/TOML parse, JNI symbol check | | OK |
-| Patch applied over the full Stage 1 tree (commit-35412ef state, including the existing `scripts/check_jni_symbols.py`) | copy of the previous tree + placeholders, patch unzipped over it, then the whole suite | identical tree, all checks OK |
-
-A bug found and fixed while doing this: a first version of `deny.toml` put the new `[bans.std-replacements]` table *before* the `deny = [...]` key, which TOML then assigns to that sub-table (the ban list would have disappeared from `[bans]`). Fixed and covered by a consistency check.
+| All Python tests, both discovery forms | `python3 -m unittest discover -s scripts -p 'test_*.py' -v` and `-s scripts/tests` | **117 tests OK** (was 91). Without the new `scripts/tests/__init__.py` the first form ran **0 tests** |
+| New R8 tests | 50 tests: verbatim real fragments, hyphen/`$` class names, unchanged methods absent from mapping, renamed method (`nativeInit -> a`, each of the 8), renamed/missing `RustBridge`, missing method in seeds, truncated/garbage/empty files, exception constructors in 4 print styles, usage cases, CRLF, 60,000-class mapping in about 0.3 s | OK |
+| Mutation testing of the R8 checker | 16 mutations (old class regex, ignore renames, ignore signatures, ignore class renames/missing classes, ignore seeds checks, ignore corrupt lines, ignore empty files, only `<init>`, usage checks, the old "entry required" rule) | each caught by the targeted tests (one invalid mutation of mine was detected as a no-op and redone) |
+| Project consistency, strict, on a copy with placeholder wrapper/lock | `python3 scripts/check_project_consistency.py --strict` | OK |
+| JNI symbols | `python3 scripts/check_jni_symbols.py` | OK (8 methods) |
+| Whitespace/conflict markers | `git diff --check` in a temporary git repository (base = the efa5f70 tree incl. the maintainer's `.gitignore`) | no findings |
+| Action pins (structure), `compileall`, YAML, TOML, XML, APK-permission script logic | | OK |
 
 ## NOT executed
-`cargo test`, `cargo check`, `cargo ndk`, any Gradle command (sync, `assembleDebug`, **`assembleRelease` with R8**), unit and instrumented Android tests, **`cargo install cargo-deny` and `cargo deny`** (version 0.20.2 and the whole `deny.toml`, including `licenses.private` and the `allow` list, are unconfirmed until CI), real `aapt2`/`zipalign`, the real `check_apk_native.py` / `check_r8_keep.py` on a CI-built APK, the online SHA verification (the two pinned SHAs come from public pull requests), the emulator job, the workflow on GitHub, `shellcheck`, the PowerShell script. **No release APK exists; nothing is claimed about its contents.**
+Gradle and any Android build (**the corrected checker has not run on a real `assembleRelease` output**), the real `mapping.txt`/`seeds.txt`/`usage.txt` of run #6, the CI logs, `cargo` anything, `cargo deny`, the online SHA check, the emulator job, the workflow itself.
 
-## First CI run decides
-1. `check_r8_keep.py` assumes R8 writes an entry for **every** native method of RustBridge in `mapping.txt`. If R8 omits unrenamed members, the check reports "no entry" although nothing is wrong. Then send the real `r8-mapping-release` artifact; the rule must be adjusted with a real file in hand (not weakened blindly).
-2. `cargo install cargo-deny --version 0.20.2 --locked` and the `deny.toml` field names (`bans.std-replacements` is confirmed by the 0.20 docs page; `licenses.private`/`confidence-threshold` were not visible on the 0.20 pages).
-3. A license outside `MIT`, `Apache-2.0`, `Unicode-3.0` in the dependency tree (the log names the crate).
-4. `assembleRelease` may show lint or R8 findings that the debug build never did.
-5. zipalign check assumes AGP aligns the unsigned release APK to 16 KB.
-6. A wrong action SHA fails the job during setup: run `python3 scripts/verify_action_pins.py --online` before pushing.
+## Still assumed (decided by the next CI run)
+1. How R8 9.3.16 prints the constructors of `RpxNativeException$*` in `seeds.txt`: the check accepts `<init>(java.lang.String)` and the ProGuard form `ShortName(java.lang.String)` and prints the real lines if neither matches.
+2. The layout of `usage.txt` (only class-level and RustBridge-member removals are looked for).
+3. Everything listed as open in the previous verification log for cargo-deny, licenses and release lint (no log shows them failing).
