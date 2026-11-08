@@ -30,7 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-JAVA_TYPES = {"String": "java.lang.String", "Int": "int", "Long": "long", "LongArray": "long[]"}
+JAVA_TYPES = {"String": "java.lang.String", "Int": "int", "Long": "long", "LongArray": "long[]", "Boolean": "boolean"}
 
 # `original.Name -> obfuscated.Name:`  (any non-blank characters: `$`, `-`, ...)
 CLASS_LINE = re.compile(r"^(?P<orig>\S+) -> (?P<obf>\S+):$")
@@ -164,6 +164,8 @@ def check_dir(mapping_dir: Path, exp):
     for cls in [bridge, base, *subs]:
         if cls not in class_map:
             errors.append(f"mapping.txt: {cls} is missing (removed by R8?)")
+        elif class_map[cls].startswith("R8$$REMOVED$$CLASS$$"):
+            errors.append(f"mapping.txt: {cls} was removed by R8 (mapped to {class_map[cls]})")
         elif class_map[cls] != cls:
             errors.append(f"mapping.txt: {cls} was renamed to {class_map[cls]} (JNI/native lookup would break)")
     methods = [m for m in members[bridge] if m["kind"] == "method"]

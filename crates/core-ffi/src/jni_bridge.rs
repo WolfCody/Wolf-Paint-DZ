@@ -10,13 +10,13 @@
 //! * Rust panics are caught and reported as `RpxNativeException$NativePanic`.
 //! * Documents are addressed by opaque `long` handles that are validated on every call.
 //!
-//! Function names follow the JNI mangling rule: `Java_` + package with `_` + `_` + class +
+//! Function names follow the JNI mangling rule: `Java_` + package with `.→_` + `_` + class +
 //! `_` + method. The package and class contain no underscores, so no `_1` escapes are needed.
 
 #![allow(non_snake_case)]
 
 use jni::objects::{JClass, JString};
-use jni::sys::{jint, jlong, jlongArray, jstring};
+use jni::sys::{jboolean, jint, jlong, jlongArray, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 
 use core_model::{CanvasSize, DocumentMode, Handle, RpxError};
@@ -29,21 +29,16 @@ enum BridgeError {
 }
 
 impl From<RpxError> for BridgeError {
-    fn from(error: RpxError) -> Self {
-        BridgeError::Rpx(error)
-    }
+    fn from(error: RpxError) -> Self { BridgeError::Rpx(error) }
 }
 
 impl From<jni::errors::Error> for BridgeError {
-    fn from(error: jni::errors::Error) -> Self {
-        BridgeError::Jni(error)
-    }
+    fn from(error: jni::errors::Error) -> Self { BridgeError::Jni(error) }
 }
 
 type BridgeResult<T> = Result<T, BridgeError>;
 
-/// Runs `body` with panic containment and converts every failure into a pending Java
-/// exception. Returns `fallback` in the failure case.
+/// Runs `body` with panic containment and converts every failure into a pending Java exception.
 fn run<'local, T>(
     env: &mut JNIEnv<'local>,
     fallback: T,
@@ -51,10 +46,7 @@ fn run<'local, T>(
 ) -> T {
     match catch_panic(|| body(&mut *env)) {
         Ok(Ok(value)) => value,
-        Ok(Err(error)) => {
-            report(env, error);
-            fallback
-        }
+        Ok(Err(error)) => { report(env, error); fallback }
         Err(message) => {
             throw(env, exception_class::NATIVE_PANIC, &format!("native panic: {message}"));
             fallback
@@ -68,7 +60,6 @@ fn report(env: &mut JNIEnv<'_>, error: BridgeError) {
             log::warn!("{error}");
             throw(env, exception_class_for(error.kind()), &error.to_string());
         }
-        // A Java exception is already pending (e.g. OutOfMemoryError); let it propagate.
         BridgeError::Jni(jni::errors::Error::JavaException) => {}
         BridgeError::Jni(error) => {
             log::error!("jni error: {error}");
@@ -78,22 +69,19 @@ fn report(env: &mut JNIEnv<'_>, error: BridgeError) {
 }
 
 fn throw(env: &mut JNIEnv<'_>, class: &str, message: &str) {
-    // Never overwrite an exception that is already pending.
-    if env.exception_check().unwrap_or(false) {
-        return;
-    }
+    if env.exception_check().unwrap_or(false) { return; }
     if let Err(error) = env.throw_new(class, message) {
         log::error!("could not throw {class}: {error}");
     }
 }
 
 fn read_string(env: &mut JNIEnv<'_>, value: &JString<'_>) -> BridgeResult<String> {
-    let text: String = env.get_string(value)?.into();
-    Ok(text)
+    Ok(env.get_string(value)?.into())
 }
 
 fn to_handle(raw: jlong) -> BridgeResult<Handle> {
-    Handle::from_raw(raw as u64).ok_or_else(|| BridgeError::Rpx(RpxError::InvalidHandle(raw as u64)))
+    Handle::from_raw(raw as u64)
+        .ok_or_else(|| BridgeError::Rpx(RpxError::InvalidHandle(raw as u64)))
 }
 
 /// `static native fun nativeInit(workDir: String)`
@@ -140,7 +128,7 @@ pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeCrea
     })
 }
 
-/// `static native fun nativeDocumentInfo(handle: Long): LongArray` (layout: `DocumentInfo::to_wire`)
+/// `static native fun nativeDocumentInfo(handle: Long): LongArray`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocumentInfo<'local>(
     mut env: JNIEnv<'local>,
@@ -148,8 +136,9 @@ pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocu
     handle: jlong,
 ) -> jlongArray {
     run(&mut env, std::ptr::null_mut(), |env| {
-        let document = engine()?.document(to_handle(handle)?)?;
-        let wire = document.info().to_wire();
+        let doc_arc = engine()?.document(to_handle(handle)?)?;
+        let doc = doc_arc.lock().unwrap_or_else(|p| p.into_inner());
+        let wire = doc.info().to_wire();
         let array = env.new_long_array(wire.len() as jint)?;
         env.set_long_array_region(&array, 0, &wire)?;
         Ok(array.into_raw())
@@ -164,8 +153,9 @@ pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocu
     handle: jlong,
 ) -> jstring {
     run(&mut env, std::ptr::null_mut(), |env| {
-        let document = engine()?.document(to_handle(handle)?)?;
-        Ok(env.new_string(document.name())?.into_raw())
+        let doc_arc = engine()?.document(to_handle(handle)?)?;
+        let doc = doc_arc.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(env.new_string(doc.name())?.into_raw())
     })
 }
 
@@ -192,7 +182,7 @@ pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeOpen
         let raws: Vec<jlong> = engine()?
             .open_documents()
             .into_iter()
-            .map(|handle| handle.raw() as jlong)
+            .map(|h| h.raw() as jlong)
             .collect();
         let array = env.new_long_array(raws.len() as jint)?;
         env.set_long_array_region(&array, 0, &raws)?;
@@ -200,8 +190,7 @@ pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeOpen
     })
 }
 
-/// `static native fun nativeDebugPanic()` — proves that panics become Java exceptions.
-/// Debug builds panic on purpose; release builds report `Unsupported`.
+/// `static native fun nativeDebugPanic()` — proves panics become Java exceptions.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDebugPanic<'local>(
     mut env: JNIEnv<'local>,
@@ -214,5 +203,59 @@ pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDebu
         Err(BridgeError::Rpx(RpxError::Unsupported(
             "nativeDebugPanic is available in debug builds only",
         )))
+    })
+}
+
+/// `static native fun nativeAddLayer(documentHandle: Long, name: String): Long`
+///
+/// Creates a new raster layer in the document and returns its unique layer ID.
+/// The layer is visible and fully opaque by default.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeAddLayer<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    document_handle: jlong,
+    name: JString<'local>,
+) -> jlong {
+    run(&mut env, 0, |env| {
+        let handle = to_handle(document_handle)?;
+        let name = read_string(env, &name)?;
+        if name.is_empty() {
+            return Err(BridgeError::Rpx(RpxError::InvalidArgument(
+                "layer name must not be empty".into(),
+            )));
+        }
+        let layer_id = engine()?.add_layer(handle, name)?;
+        Ok(layer_id as jlong)
+    })
+}
+
+/// `static native fun nativeSetPixel(documentHandle: Long, layerId: Long, x: Int, y: Int, colorArgb: Int): Boolean`
+///
+/// Writes one pixel into a layer. `colorArgb` is the standard Android `0xAARRGGBB` integer.
+/// ARGB→premultiplied-RGBA conversion happens exactly once inside `Document::set_pixel`.
+/// Returns `true` on success, `false` if coordinates are outside the canvas.
+/// Throws if the document or layer does not exist.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeSetPixel<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    document_handle: jlong,
+    layer_id: jlong,
+    x: jint,
+    y: jint,
+    color_argb: jint,
+) -> jboolean {
+    run(&mut env, JNI_FALSE, |_env| {
+        let handle = to_handle(document_handle)?;
+        // Reject negative coordinates before converting to u32.
+        let px = u32::try_from(x)
+            .map_err(|_| RpxError::InvalidArgument(format!("negative x coordinate: {x}")))?;
+        let py = u32::try_from(y)
+            .map_err(|_| RpxError::InvalidArgument(format!("negative y coordinate: {y}")))?;
+        let layer_id = layer_id as u64;
+        let argb = color_argb as u32;
+        let wrote = engine()?.set_pixel(handle, layer_id, px, py, argb)?;
+        Ok(if wrote { JNI_TRUE } else { JNI_FALSE })
     })
 }

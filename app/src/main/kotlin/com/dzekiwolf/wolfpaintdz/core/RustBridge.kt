@@ -2,8 +2,8 @@ package com.dzekiwolf.wolfpaintdz.core
 
 /**
  * Raw JNI surface. Every method is implemented in crates/core-ffi/src/jni_bridge.rs under the
- * name `Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_<method>`; `scripts/check_jni_symbols.py` checks
- * that both sides agree. Use [RustEngine] from application code, not this object.
+ * name `Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_<method>`; `scripts/check_jni_symbols.py`
+ * checks that both sides agree. Use [RustEngine] from application code, not this object.
  *
  * Failures arrive as [RpxNativeException]. All methods are thread-safe.
  */
@@ -22,4 +22,8 @@ internal object RustBridge {
     @JvmStatic external fun nativeCloseDocument(handle: Long)
     @JvmStatic external fun nativeOpenDocuments(): LongArray
     @JvmStatic external fun nativeDebugPanic()
+
+    // Stage 2.1b
+    @JvmStatic external fun nativeAddLayer(documentHandle: Long, name: String): Long
+    @JvmStatic external fun nativeSetPixel(documentHandle: Long, layerId: Long, x: Int, y: Int, colorArgb: Int): Boolean
 }

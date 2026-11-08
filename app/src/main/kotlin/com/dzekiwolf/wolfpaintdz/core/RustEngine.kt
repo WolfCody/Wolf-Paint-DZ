@@ -18,6 +18,23 @@ class RustEngine private constructor(override val version: String) : NativeEngin
     override fun openDocuments(): List<DocumentHandle> =
         RustBridge.nativeOpenDocuments().map { DocumentHandle(it) }
 
+    // Stage 2.1b
+
+    /**
+     * Adds a raster layer to [handle] and returns its unique layer ID.
+     * The layer is visible and fully opaque by default.
+     */
+    fun addLayer(handle: DocumentHandle, name: String): Long =
+        RustBridge.nativeAddLayer(handle.raw, name)
+
+    /**
+     * Writes one pixel into [layerId] of [handle].
+     * [colorArgb] is the standard Android `0xAARRGGBB` integer.
+     * Returns `true` on success, `false` if the coordinates are outside the canvas.
+     */
+    fun setPixel(handle: DocumentHandle, layerId: Long, x: Int, y: Int, colorArgb: Int): Boolean =
+        RustBridge.nativeSetPixel(handle.raw, layerId, x, y, colorArgb)
+
     /** Test hook: makes Rust panic (debug builds) so the panic-to-exception path can be verified. */
     fun triggerDebugPanic() = RustBridge.nativeDebugPanic()
 

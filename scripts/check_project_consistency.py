@@ -375,6 +375,52 @@ def check_hardening():
             errors.append(f"{doc} is missing")
 
 
+def check_rust_crates():
+    """Workspace crates: members exist and are hygienic; the shared tile size cannot drift."""
+    root = tomllib.loads(read("Cargo.toml"))
+    members = root["workspace"]["members"]
+    for member in members:
+        manifest = tomllib.loads(read(f"{member}/Cargo.toml"))
+        name = manifest["package"]["name"]
+        if manifest["package"].get("publish") != {"workspace": True}:
+            errors.append(f"{member}: publish.workspace = true is required (cargo-deny treats it as private)")
+        if name == "core-raster":
+            if manifest.get("dependencies"):
+                errors.append(f"{member}: must stay dependency-free (no external deps allowed), found {list(manifest['dependencies'])}")
+        if name == "core-model":
+            deps = manifest.get("dependencies", {})
+            # Stage 2.1b: core-model may depend ONLY on core-raster (internal path dep).
+            forbidden = [d for d in deps if d != "core-raster"]
+            if forbidden:
+                errors.append(f"{member}: only core-raster path-dep is allowed, found unexpected deps: {forbidden}")
+            if manifest.get("lints", {}).get("rust", {}).get("unsafe_code") != "forbid":
+                errors.append(f"{member}: [lints.rust] unsafe_code = \"forbid\" is required")
+    for crate in ("core-model", "core-raster"):
+        if f"crates/{crate}" not in members:
+            errors.append(f"crates/{crate} is missing from the workspace members")
+    model = re.search(r"pub const TILE_SIZE: u32 = (\d+);", read("crates/core-model/src/document.rs"))
+    raster = re.search(r"pub const TILE_SIZE: u32 = (\d+);", read("crates/core-raster/src/tile.rs"))
+    if not model or not raster or model.group(1) != raster.group(1):
+        errors.append("TILE_SIZE differs between core-model (document.rs) and core-raster (tile.rs)")
+    # Stage 2.1b: core-model MUST depend on core-raster; core-ffi MUST NOT directly depend on core-raster.
+    if "core-raster" not in read("crates/core-model/Cargo.toml"):
+        errors.append("core-model must have a path-dependency on core-raster (stage 2.1b)")
+    if "core-raster" in read("crates/core-ffi/Cargo.toml"):
+        errors.append("core-ffi must not depend directly on core-raster (use core-model instead)")
+
+    wf = read(".github/workflows/android.yml")
+    boot = workflow_jobs(wf)["bootstrap"]
+    if "scripts/check_lock_change.py" not in boot or "cargo update --workspace" not in boot:
+        errors.append("bootstrap must refresh a stale Cargo.lock only with 'cargo update --workspace' + scripts/check_lock_change.py")
+    for line in wf.splitlines():
+        if re.search(r"cargo update(?! --workspace)", line) and not line.strip().startswith("#"):
+            errors.append(f"workflow runs cargo update without --workspace: {line.strip()}")
+    android = workflow_jobs(wf)["android"]
+    for needed in ("attempts=3", "Error on ZipFile", "removing partial downloads"):
+        if needed not in android:
+            errors.append(f"android job: SDK install must retry transient download errors (missing '{needed}')")
+
+
 def check_reproducibility_files():
     missing = [p for p in ["gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar", "Cargo.lock"] if not (ROOT / p).exists()]
     props = read("gradle/wrapper/gradle-wrapper.properties")
@@ -388,7 +434,7 @@ def check_reproducibility_files():
 
 
 for check in (check_xml, check_catalog, check_resources, check_exceptions, check_offline, check_cargo,
-              check_workflow_and_versions, check_naming, check_hardening, check_reproducibility_files):
+              check_workflow_and_versions, check_naming, check_hardening, check_rust_crates, check_reproducibility_files):
     check()
 
 for w in warnings:
