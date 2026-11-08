@@ -1,37 +1,36 @@
-# Verification log (Stage 2.0, R8 check fix after CI run #6)
+# Verification log (Stage 2.1a: core-raster + CI hardening after CI runs #6/#7)
 
-Authoring sandbox: Python 3.12, bash, git, OpenJDK 21 (runtime only), xmllint, PyYAML, zip, readelf. **No** rustc/cargo, Gradle, Kotlin compiler, Android SDK/NDK, aapt2, zipalign, cargo-deny, emulator, PowerShell. Network: only public GitHub pages could be fetched, not artifacts or logs.
+Authoring sandbox: Python 3.12, bash, OpenJDK 21 (runtime only), xmllint, PyYAML, zip. Network: only public GitHub pages. **Rust, Gradle, Android SDK/NDK, cargo-deny, aapt2, zipalign, emulator** — not available.
 
-## What was and was not available from CI run #6 (commit efa5f70)
-| Source | Readable by the author? | What was learned |
+## Real CI artifact analysis (run #7, commit 8e7ce0b, artifacts uploaded by user)
+
+| Artifact | Contents | Findings |
 |---|---|---|
-| Run page `actions/runs/41290489356` | yes (public) | status Failure; exactly one error annotation: job "Wolf Paint DZ debug APK", **step 22** ("Process completed with exit code 1"); the four artifacts and their sizes |
-| Step 22 = `check_r8_keep.py` | derived from the workflow step order | the R8 check is the step that failed. Steps 18 to 21 ran before it, so the release build, the release aapt2 permission check, `zipalign -c -P 16` and `check_apk_native.py` on the release APK passed (inferred; their log lines were not seen) |
-| Jobs bootstrap, rust, supply-chain | no error annotation on the run page | inferred as passed; not confirmed by logs |
-| Artifacts `bootstrap-files`, `r8-mapping-release`, `unit-test-reports`, `wolf-paint-dz-debug-apk` | **no** (download needs a GitHub login; nothing was uploaded to the sandbox) | contents unknown. The maintainer's description is the only source about the real R8 files |
-| Step logs | no (login) | the exact error text of step 22 is unknown |
+| `r8-mapping-release` | `mapping.txt` (5.19 MB, thousands of classes), `seeds.txt`, `usage.txt`, `configuration.txt` | Excerpts with the real R8 9.3.16 output are saved as test fixtures in `scripts/tests/fixtures/r8_real/`. Short class names (Kotlin lambda mangling: `$`, `$$inlined$`, `-O2vRcR0$`) confirmed. R8 writes only renamed/line-numbered members: our native methods are not in `mapping.txt` and that is correct — they are in `seeds.txt`. Constructor style is `ShortName(java.lang.String)` (e.g. `InvalidArgument(java.lang.String)`), not `<init>`. `usage.txt` lists removed members (`$stable`, `INSTANCE`, `<clinit>`) but no native method and no entire JNI class. The checker returned OK on the excerpts |
+| `unit-test-reports` | Gradle HTML report, `testDebugUnitTest` | 16 Kotlin tests, 0 failures, 0 skipped, 0.869 s, 100 % successful (Gradle 9.5.0, 2026-11-02) |
+| `wolf-paint-dz-debug-apk` | `wolf-paint-dz-debug.apk` (11.3 MB) | 2 of our libraries (`librpx_core.so` for arm64 and x86_64) + 2 third-party (`libandroidx.graphics.path.so`). All 4: stored (not compressed), zip offset 0 mod 16384, min PT_LOAD align 0x4000. JNI exports: all 8 `Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_*` present in `.dynsym` as GLOBAL DEFAULT FUNC defined symbols. INTERNET permission: not present (string pool scan). Package: `com.dzekiwolf.wolfpaintdz`. Launcher label: `Wolf Paint DZ`. Run #6 failure confirmed: CI run #7 (the run after the R8 fix) passed |
 
-## Cause of the R8 failure
-Reproduced with the previous checker (efa5f70) on a fixture built from the fragments the maintainer quoted (fixture seeds were incomplete, so only these two findings are valid evidence):
-1. **Class names:** the class-line regex accepted only `[\w.$]`; a real mapping line such as `androidx.compose.foundation.ClickableKt$clickable-O2vRcR0$$inlined$clickableWithIndicationIfNeeded$1 -> dh:` was reported as "unrecognized line outside any class block".
-2. **Wrong rule:** the checker demanded an entry in `mapping.txt` for every native method. R8 lists only renamed (or line-numbered) members, so unchanged native methods are absent. The correct evidence that they are kept is `seeds.txt`.
-Other causes cannot be excluded without the step log (for example how R8 prints the exception constructors in `seeds.txt`).
-
-## Executed (real results)
-| Check | Command | Result |
-|---|---|---|
-| All Python tests, both discovery forms | `python3 -m unittest discover -s scripts -p 'test_*.py' -v` and `-s scripts/tests` | **117 tests OK** (was 91). Without the new `scripts/tests/__init__.py` the first form ran **0 tests** |
-| New R8 tests | 50 tests: verbatim real fragments, hyphen/`$` class names, unchanged methods absent from mapping, renamed method (`nativeInit -> a`, each of the 8), renamed/missing `RustBridge`, missing method in seeds, truncated/garbage/empty files, exception constructors in 4 print styles, usage cases, CRLF, 60,000-class mapping in about 0.3 s | OK |
-| Mutation testing of the R8 checker | 16 mutations (old class regex, ignore renames, ignore signatures, ignore class renames/missing classes, ignore seeds checks, ignore corrupt lines, ignore empty files, only `<init>`, usage checks, the old "entry required" rule) | each caught by the targeted tests (one invalid mutation of mine was detected as a no-op and redone) |
-| Project consistency, strict, on a copy with placeholder wrapper/lock | `python3 scripts/check_project_consistency.py --strict` | OK |
-| JNI symbols | `python3 scripts/check_jni_symbols.py` | OK (8 methods) |
-| Whitespace/conflict markers | `git diff --check` in a temporary git repository (base = the efa5f70 tree incl. the maintainer's `.gitignore`) | no findings |
-| Action pins (structure), `compileall`, YAML, TOML, XML, APK-permission script logic | | OK |
+## Executed in this round (all in the sandbox)
+| Check | Result |
+|---|---|
+| `python3 scripts/check_project_consistency.py --strict` (simulated placeholder tree) | OK |
+| All Python tests: `python3 -m unittest discover -s scripts -p 'test_*.py' -v` | **137 tests OK** |
+| `check_r8_keep.py` on the REAL excerpts (`scripts/tests/fixtures/r8_real/`) | OK; prints `R8 keeps OK: … 8 native methods …` |
+| `check_apk_native.py` on the real debug APK | OK; also checks `libandroidx.graphics.path.so` |
+| Mutation tests: R8 checker (16), APK checker (24), lock-change checker, SDK retry step, consistency script negative tests | every mutation caught by the targeted tests |
+| YAML, TOML, XML, `bash -n`, `compileall`, JNI symbols | OK |
 
 ## NOT executed
-Gradle and any Android build (**the corrected checker has not run on a real `assembleRelease` output**), the real `mapping.txt`/`seeds.txt`/`usage.txt` of run #6, the CI logs, `cargo` anything, `cargo deny`, the online SHA check, the emulator job, the workflow itself.
+`cargo test --workspace` (no Rust), including `core-raster` host tests. The first CI run with the new `core-raster` crate and the lock-step will reveal whether `cargo update --workspace` leaves the third-party packages identical.
 
-## Still assumed (decided by the next CI run)
-1. How R8 9.3.16 prints the constructors of `RpxNativeException$*` in `seeds.txt`: the check accepts `<init>(java.lang.String)` and the ProGuard form `ShortName(java.lang.String)` and prints the real lines if neither matches.
-2. The layout of `usage.txt` (only class-level and RustBridge-member removals are looked for).
-3. Everything listed as open in the previous verification log for cargo-deny, licenses and release lint (no log shows them failing).
+## New this round
+* Real R8 test fixtures + 11 `RealArtifactTests` covering the actual CI artifact.
+* `check_apk_native.py`: now also checks all third-party native libraries of the 64-bit ABIs (storage, 16 KB alignment).
+* `check_lock_change.py`: allows `cargo update --workspace` to touch only workspace crates; tested with a fake `cargo`.
+* Bootstrap step `Cargo.lock matches the workspace crates`: detects a stale lock (new workspace member), runs `--workspace`-only update and verifies the diff; tested with `test_workflow_lock_step.py`.
+* SDK retry step: retries transient "Error on ZipFile" failures (the actual error of CI run #7) with cleanup of partial downloads; tested with `test_workflow_sdk_step.py`.
+* `crates/core-raster`: `Tile`, `TileStore`, geometry helpers — host-only, not wired into the app yet.
+* Consistency script: TILE_SIZE parity, crate hygiene, lock-step and SDK-retry guards.
+
+## Stage 2.1a status
+Written and tested on the host. Not wired into the Android app or the JNI bridge yet (stage 2.1b).

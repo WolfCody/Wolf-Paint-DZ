@@ -154,7 +154,8 @@ class GoodApkTests(unittest.TestCase):
     def test_good_apk_passes(self):
         errors, report = check(arm())
         self.assertEqual(errors, [])
-        self.assertEqual(len(report), 2)
+        self.assertEqual(len(report), 3)  # two of our libraries + the summary of the other native libraries
+        self.assertIn("0 other native libraries", report[-1])
 
     def test_32bit_abi_is_not_held_to_16k(self):
         apk = Path(tempfile.mkdtemp()) / "t.apk"
@@ -355,6 +356,58 @@ class MalformedElfTests(unittest.TestCase):
     def test_32bit_elf_in_64bit_abi(self):
         errors, _ = check(build_elf(32, 0x4000, machine=183)[0])
         self.assertTrue(any("32-bit" in e for e in errors), errors)
+
+
+class OtherLibrariesTests(unittest.TestCase):
+    """Third-party native libraries of the 64-bit ABIs (for example libandroidx.graphics.path.so) are checked too."""
+
+    def check_with(self, extra: dict, **apk_kw):
+        arm = {"lib/arm64-v8a/librpx_core.so": arm_elf(), "lib/x86_64/librpx_core.so": build_elf(machine=62)[0]}
+        arm.update(extra)
+        apk = Path(tempfile.mkdtemp()) / "t.apk"
+        build_apk(apk, arm, **apk_kw)
+        return c.check_apk(apk, ["arm64-v8a", "x86_64"], {"arm64-v8a", "x86_64"}, EXPECTED)
+
+    def test_aligned_third_party_library_passes_without_jni_exports(self):
+        data, _ = build_elf(dynsyms=[S("some_other_symbol")])
+        errors, report = self.check_with({"lib/arm64-v8a/libother.so": data})
+        self.assertEqual(errors, [])
+        self.assertTrue(any("1 other native library" in line for line in report), report)
+
+    def test_third_party_library_with_4k_alignment_fails(self):
+        errors, _ = self.check_with({"lib/x86_64/libother.so": build_elf(machine=62, align=0x1000)[0]})
+        self.assertTrue(any("lib/x86_64/libother.so" in e and "p_align" in e for e in errors), errors)
+
+    def test_third_party_library_that_is_compressed_fails(self):
+        # all entries are written compressed here, so the first error is for our own library as well
+        errors, _ = self.check_with({"lib/arm64-v8a/libother.so": build_elf()[0]}, compress=True)
+        self.assertTrue(any("libother.so is compressed" in e for e in errors), errors)
+
+    def test_third_party_library_not_zip_aligned_fails(self):
+        errors, _ = self.check_with({"lib/arm64-v8a/libother.so": build_elf()[0]}, aligned=False)
+        self.assertTrue(any("libother.so: zip data offset" in e for e in errors), errors)
+
+    def test_malformed_third_party_library_fails_cleanly(self):
+        errors, _ = self.check_with({"lib/arm64-v8a/libbroken.so": b"\x7fELF" + b"\0" * 20})
+        self.assertTrue(any("libbroken.so: malformed ELF" in e for e in errors), errors)
+
+    def test_third_party_library_without_section_headers_is_fine(self):
+        data, _ = build_elf()
+        struct.pack_into("<H", data, 0x3C, 0)  # e_shnum = 0: stripped section headers are legal for a loadable library
+        errors, _ = self.check_with({"lib/arm64-v8a/libstripped.so": data})
+        self.assertEqual(errors, [])
+
+    def test_libraries_of_32bit_abis_are_not_held_to_16k(self):
+        errors, _ = self.check_with({"lib/armeabi-v7a/libold.so": build_elf(32, 0x1000, machine=40)[0]})
+        self.assertEqual(errors, [])
+
+    def test_non_library_entries_are_ignored(self):
+        errors, _ = self.check_with({"lib/arm64-v8a/notes.txt": b"hello", "lib/arm64-v8a/sub/dir/libdeep.so": b"junk"})
+        self.assertEqual(errors, [])
+
+
+def arm_elf():
+    return build_elf()[0]
 
 
 if __name__ == "__main__":
