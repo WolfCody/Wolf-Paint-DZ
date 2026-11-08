@@ -18,7 +18,7 @@ KOTLIN = ROOT / "app/src/main/kotlin" / PACKAGE.replace(".", "/") / "RustBridge.
 CLASS = "RustBridge"
 
 PARAM_TYPES = {"String": "JString", "Int": "jint", "Long": "jlong"}
-RETURN_TYPES = {"String": "jstring", "Int": "jint", "Long": "jlong", "LongArray": "jlongArray"}
+RETURN_TYPES = {"String": "jstring", "Int": "jint", "Long": "jlong", "LongArray": "jlongArray", "Boolean": "jboolean"}
 
 
 def mangle(text: str) -> str:

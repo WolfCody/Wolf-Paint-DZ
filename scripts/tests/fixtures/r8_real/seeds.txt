@@ -1,0 +1,43 @@
+androidx.compose.ui.draw.PainterElement
+androidx.compose.foundation.text.contextmenu.modifier.TextContextMenuToolbarHandlerElement
+androidx.compose.foundation.ScrollingLayoutElement
+androidx.compose.foundation.text.modifiers.SelectableTextAnnotatedStringElement
+androidx.compose.animation.VeilModifierElement
+androidx.compose.foundation.layout.HorizontalAlignElement
+androidx.compose.foundation.text.handwriting.StylusHandwritingElement
+androidx.lifecycle.ProcessLifecycleOwner$attach$1$onActivityPreCreated$1
+androidx.compose.material3.internal.ChildSemanticsNodeElement
+androidx.compose.ui.focus.FocusRequesterElement
+androidx.window.area.reflectionguard.ExtensionWindowAreaStatusRequirements
+androidx.core.app.CoreComponentFactory
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$NativePanic
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$InvalidHandle
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Unsupported
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Internal
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$InvalidArgument
+com.dzekiwolf.wolfpaintdz.core.RustBridge
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$NotInitialized
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Io
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$CanvasTooLarge
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException: int $stable
+com.dzekiwolf.wolfpaintdz.core.RustBridge: void nativeCloseDocument(long)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$NativePanic: RpxNativeException$NativePanic(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$CanvasTooLarge: RpxNativeException$CanvasTooLarge(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException: RpxNativeException(java.lang.String,kotlin.jvm.internal.DefaultConstructorMarker)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: java.lang.String nativeDocumentName(long)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Internal: RpxNativeException$Internal(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: void nativeInit(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$InvalidHandle: RpxNativeException$InvalidHandle(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Unsupported: RpxNativeException$Unsupported(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException: RpxNativeException(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: void nativeDebugPanic()
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$InvalidArgument: RpxNativeException$InvalidArgument(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: java.lang.String nativeVersion()
+com.dzekiwolf.wolfpaintdz.core.RustBridge: long[] nativeOpenDocuments()
+com.dzekiwolf.wolfpaintdz.core.RustBridge: long nativeAddLayer(long,java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: boolean nativeSetPixel(long,long,int,int,int)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: long[] nativeDocumentInfo(long)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Io: RpxNativeException$Io(java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: long nativeCreateDocument(java.lang.String,int,int,int)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$NotInitialized: RpxNativeException$NotInitialized(java.lang.String)

@@ -23,6 +23,8 @@ com.dzekiwolf.wolfpaintdz.core.RustBridge: java.lang.String nativeVersion()
 com.dzekiwolf.wolfpaintdz.core.RustBridge: void nativeInit(java.lang.String)
 com.dzekiwolf.wolfpaintdz.core.RustBridge: long nativeCreateDocument(java.lang.String,int,int,int)
 com.dzekiwolf.wolfpaintdz.core.RustBridge: long[] nativeOpenDocuments()
+com.dzekiwolf.wolfpaintdz.core.RustBridge: long nativeAddLayer(long,java.lang.String)
+com.dzekiwolf.wolfpaintdz.core.RustBridge: boolean nativeSetPixel(long,long,int,int,int)
 """
 
 
@@ -322,11 +324,91 @@ class FilesAndUsageTests(unittest.TestCase):
         self.assertEqual(run(usage=USAGE_OK + "androidx.compose.Foo$bar-O2vRcR0$$inlined$x$1\n"), [])
 
     def test_expectations_come_from_the_real_sources(self):
-        self.assertEqual(len(EXP["natives"]), 8)
+        self.assertEqual(len(EXP["natives"]), 10)  # 8 original + nativeAddLayer + nativeSetPixel
         self.assertEqual(EXP["natives"]["nativeCreateDocument"], ("long", ["java.lang.String", "int", "int", "int"]))
         self.assertEqual(EXP["natives"]["nativeOpenDocuments"], ("long[]", []))
+        self.assertEqual(EXP["natives"]["nativeAddLayer"], ("long", ["long", "java.lang.String"]))
+        self.assertEqual(EXP["natives"]["nativeSetPixel"], ("boolean", ["long", "long", "int", "int", "int"]))
         self.assertEqual(len(EXP["subclasses"]), 8)
         self.assertTrue(EXP["bridge"].endswith(".core.RustBridge"))
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "r8_real"
+
+
+def real(mapping=None, seeds=None, usage=None):
+    """check_dir on the UNMODIFIED real excerpts (fixtures/r8_real), optionally mutated by the given functions."""
+    d = Path(tempfile.mkdtemp())
+    for name, fn in (("mapping.txt", mapping), ("seeds.txt", seeds), ("usage.txt", usage)):
+        text = (FIXTURES / name).read_text(encoding="utf-8")
+        (d / name).write_text(fn(text) if fn else text, encoding="utf-8")
+    return r.check_dir(d, EXP)
+
+
+class RealArtifactTests(unittest.TestCase):
+    """Excerpts of the real R8 9.3.16 output of CI run #7 (see fixtures/r8_real/README.md)."""
+
+    def assertError(self, errors, *needles):
+        self.assertTrue(errors, "expected an error, check returned success")
+        joined = "\n".join(errors)
+        for n in needles:
+            self.assertIn(n, joined)
+
+    def test_real_excerpts_pass(self):
+        self.assertEqual(real(), [])
+
+    def test_real_bridge_block_lists_only_clinit(self):
+        lines = (FIXTURES / "mapping.txt").read_text(encoding="utf-8").splitlines()
+        _, members, problems = r.parse_mapping(lines, {B})
+        self.assertEqual(problems, [])
+        self.assertEqual([(m["kind"], m["name"], m["obf"]) for m in members[B]], [("method", "<clinit>", "<clinit>")])
+
+    def test_real_mapping_has_hyphen_names_and_removed_class_markers(self):
+        lines = (FIXTURES / "mapping.txt").read_text(encoding="utf-8").splitlines()
+        class_map, _, problems = r.parse_mapping(lines, set())
+        self.assertEqual(problems, [])
+        self.assertTrue(any("-" in name for name in class_map), "no class name with a hyphen in the fixture")
+        self.assertTrue(any(obf.startswith("R8$$REMOVED$$CLASS$$") for obf in class_map.values()))
+
+    def test_real_seeds_print_constructors_in_the_short_name_style(self):
+        seeds = (FIXTURES / "seeds.txt").read_text(encoding="utf-8").splitlines()
+        cls = EXP["subclasses"][0]
+        short = cls.rsplit(".", 1)[-1]
+        self.assertIn(f"{cls}: {short}(java.lang.String)", seeds)
+
+    def test_real_native_methods_are_listed_in_seeds_in_the_expected_form(self):
+        seeds = set((FIXTURES / "seeds.txt").read_text(encoding="utf-8").splitlines())
+        for name in EXP["natives"]:
+            self.assertIn(f"{B}: {sig(name)}", seeds)
+
+    def test_real_data_with_a_renamed_native_method(self):
+        mutate = lambda t: t.replace(  # noqa: E731
+            f"{REAL_MAPPING_BRIDGE_LINE}\n", f"{REAL_MAPPING_BRIDGE_LINE}\n    {sig('nativeInit')} -> a\n", 1)
+        self.assertIn("-> a", mutate((FIXTURES / "mapping.txt").read_text(encoding="utf-8")))
+        self.assertError(real(mapping=mutate), "nativeInit", "renamed to a")
+
+    def test_real_data_with_the_bridge_removed_by_r8(self):
+        mutate = lambda t: t.replace(REAL_MAPPING_BRIDGE_LINE, f"{B} -> R8$$REMOVED$$CLASS$$7:", 1)  # noqa: E731
+        self.assertError(real(mapping=mutate), "RustBridge", "removed by R8")
+
+    def test_real_data_with_a_native_method_missing_from_seeds(self):
+        drop = lambda t: t.replace(f"{B}: {sig('nativeDocumentInfo')}\n", "")  # noqa: E731
+        self.assertError(real(seeds=drop), "nativeDocumentInfo", "is not kept")
+
+    def test_real_data_with_a_constructor_missing_from_seeds(self):
+        cls = EXP["subclasses"][-1]
+        drop = lambda t: t.replace(f"{cls}: {cls.rsplit('.', 1)[-1]}(java.lang.String)\n", "")  # noqa: E731
+        self.assertError(real(seeds=drop), cls, "constructor")
+
+    def test_real_data_with_the_bridge_listed_as_removed_entirely(self):
+        self.assertError(real(usage=lambda t: t + f"{B}\n"), "removed entirely")
+
+    def test_real_usage_removes_only_harmless_members(self):
+        # in the real run R8 removed $stable / INSTANCE / LIBRARY / <clinit> members, never a native method or a whole class
+        usage = (FIXTURES / "usage.txt").read_text(encoding="utf-8")
+        for name in EXP["natives"]:
+            self.assertNotIn(name + "(", usage)
+        self.assertEqual(real(), [])
 
 
 if __name__ == "__main__":

@@ -1,12 +1,14 @@
-//! Document model: canvas geometry, tile grid and the document itself.
+//! Document model: canvas geometry, tile grid, raster layers and document info.
 //!
-//! Stage 1 scope: a document knows its name, mode and canvas. It owns no layers and therefore
-//! no pixel storage yet; the raster layer/tile store arrives in stage 2. Geometry helpers
-//! (tile grid, theoretical dense size) are real and are what the tile store will use.
+//! Stage 2.1b: `Document` now owns a `Vec<RasterLayer>`, each wrapping a `TileStore`
+//! from `core-raster`. `DocumentInfo::tiles_allocated` reflects the real tile count.
+
+use core_raster::{premultiply, TileStore};
 
 use crate::error::{Result, RpxError};
 
 /// Edge length of a raster tile in pixels.
+/// Must equal `core_raster::TILE_SIZE`; `scripts/check_project_consistency.py` enforces it.
 pub const TILE_SIZE: u32 = 256;
 /// Hard limit per canvas side.
 pub const MAX_CANVAS_DIMENSION: u32 = 32_768;
@@ -16,6 +18,8 @@ pub const MAX_CANVAS_PIXELS: u64 = 1 << 30;
 pub const BYTES_PER_PIXEL: u64 = 4;
 /// Maximum document name length in Unicode scalar values.
 pub const MAX_NAME_CHARS: usize = 128;
+
+// ── DocumentMode ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DocumentMode {
@@ -40,6 +44,8 @@ impl DocumentMode {
         }
     }
 }
+
+// ── TileGrid / CanvasSize ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileGrid {
@@ -79,7 +85,6 @@ impl CanvasSize {
         Ok(CanvasSize { width, height })
     }
 
-    /// Entry point for JNI `jint` values: negative numbers are rejected, not wrapped.
     pub fn from_signed(width: i32, height: i32) -> Result<Self> {
         let width = u32::try_from(width)
             .map_err(|_| RpxError::InvalidArgument(format!("negative canvas width {width}")))?;
@@ -88,20 +93,13 @@ impl CanvasSize {
         Self::new(width, height)
     }
 
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    pub fn height(&self) -> u32 {
-        self.height
-    }
+    pub fn width(&self) -> u32 { self.width }
+    pub fn height(&self) -> u32 { self.height }
 
     pub fn pixel_count(&self) -> u64 {
         u64::from(self.width) * u64::from(self.height)
     }
 
-    /// Size of a dense RGBA8 buffer for this canvas. It is only a *reference number*: the
-    /// engine never allocates it (that is the point of the tile store).
     pub fn dense_rgba_bytes(&self) -> u64 {
         self.pixel_count() * BYTES_PER_PIXEL
     }
@@ -114,7 +112,55 @@ impl CanvasSize {
     }
 }
 
-/// Snapshot of document facts sent to the UI.
+// ── RasterLayer ───────────────────────────────────────────────────────────────
+
+/// One raster layer. Owns its `TileStore` exclusively — no sharing with other layers.
+///
+/// Invariants:
+/// - `opacity` is in `[0.0, 1.0]`.
+/// - `id` is unique within its `Document` and never reused.
+#[derive(Debug)]
+pub struct RasterLayer {
+    pub id: u64,
+    pub name: String,
+    pub visible: bool,
+    pub opacity: f32,
+    tiles: TileStore,
+}
+
+impl RasterLayer {
+    fn new(id: u64, name: String) -> Self {
+        RasterLayer { id, name, visible: true, opacity: 1.0, tiles: TileStore::new() }
+    }
+
+    /// Number of tiles with at least one written pixel. O(1).
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    pub fn tiles(&self) -> &TileStore {
+        &self.tiles
+    }
+}
+
+// ── DocumentInfo ──────────────────────────────────────────────────────────────
+
+/// Snapshot of document facts sent to the UI via `nativeDocumentInfo → LongArray`.
+///
+/// Wire layout (all slots `i64`):
+/// ```text
+/// [0]  WIRE_VERSION  = 1
+/// [1]  mode          (0=Raster, 1=Vector)
+/// [2]  width
+/// [3]  height
+/// [4]  tileSize      = 256
+/// [5]  tilesX
+/// [6]  tilesY
+/// [7]  tilesTotal
+/// [8]  tilesAllocated   ← sum of TileStore::len() across all RasterLayers
+/// [9]  denseRgbaBytes
+/// ```
+/// Never remove or reorder existing slots; bump WIRE_VERSION together with `DocumentInfo.kt`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DocumentInfo {
     pub mode: DocumentMode,
@@ -129,12 +175,9 @@ pub struct DocumentInfo {
 }
 
 impl DocumentInfo {
-    /// Version of the array layout below. Bump together with `DocumentInfo.kt`.
     pub const WIRE_VERSION: i64 = 1;
     pub const WIRE_LEN: usize = 10;
 
-    /// Layout: [version, mode, width, height, tileSize, tilesX, tilesY, tilesTotal,
-    /// tilesAllocated, denseRgbaBytes]. Every value fits in a Java `long`.
     pub fn to_wire(&self) -> [i64; Self::WIRE_LEN] {
         [
             Self::WIRE_VERSION,
@@ -151,11 +194,15 @@ impl DocumentInfo {
     }
 }
 
+// ── Document ──────────────────────────────────────────────────────────────────
+
 #[derive(Debug)]
 pub struct Document {
     name: String,
     mode: DocumentMode,
     canvas: CanvasSize,
+    layers: Vec<RasterLayer>,
+    next_layer_id: u64,
 }
 
 impl Document {
@@ -178,20 +225,68 @@ impl Document {
             name: name.to_owned(),
             mode,
             canvas,
+            layers: Vec::new(),
+            next_layer_id: 1,
         })
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> &str { &self.name }
+    pub fn mode(&self) -> DocumentMode { self.mode }
+    pub fn canvas(&self) -> CanvasSize { self.canvas }
+
+    // ── Layer management ──────────────────────────────────────────────────────
+
+    /// Adds a new visible, fully-opaque layer. Returns its unique ID.
+    pub fn add_layer(&mut self, name: String) -> u64 {
+        let id = self.next_layer_id;
+        self.next_layer_id += 1;
+        self.layers.push(RasterLayer::new(id, name));
+        id
     }
 
-    pub fn mode(&self) -> DocumentMode {
-        self.mode
+    pub fn layer(&self, id: u64) -> Option<&RasterLayer> {
+        self.layers.iter().find(|l| l.id == id)
     }
 
-    pub fn canvas(&self) -> CanvasSize {
-        self.canvas
+    fn layer_mut(&mut self, id: u64) -> Option<&mut RasterLayer> {
+        self.layers.iter_mut().find(|l| l.id == id)
     }
+
+    // ── Pixel operations ──────────────────────────────────────────────────────
+
+    /// Writes a pixel into the given layer.
+    ///
+    /// `argb` is the standard Android/Kotlin `0xAARRGGBB` integer.
+    /// Premultiplied RGBA conversion happens exactly once here.
+    ///
+    /// Returns `true` on success.
+    /// Returns `false` (no allocation) when the layer does not exist or the
+    /// coordinates are outside the canvas.
+    pub fn set_pixel(&mut self, layer_id: u64, px: u32, py: u32, argb: u32) -> bool {
+        if px >= self.canvas.width() || py >= self.canvas.height() {
+            return false;
+        }
+        let layer = match self.layer_mut(layer_id) {
+            Some(l) => l,
+            None => return false,
+        };
+        let a = ((argb >> 24) & 0xFF) as u8;
+        let r = ((argb >> 16) & 0xFF) as u8;
+        let g = ((argb >> 8) & 0xFF) as u8;
+        let b = (argb & 0xFF) as u8;
+        let rgba_premul = premultiply([r, g, b, a]);
+        layer.tiles.set_pixel(px, py, rgba_premul);
+        true
+    }
+
+    // ── Accounting ────────────────────────────────────────────────────────────
+
+    /// Sum of `TileStore::len()` across all layers (visible and hidden). O(layers).
+    pub fn tiles_allocated(&self) -> usize {
+        self.layers.iter().map(|l| l.tile_count()).sum()
+    }
+
+    // ── Info ──────────────────────────────────────────────────────────────────
 
     pub fn info(&self) -> DocumentInfo {
         let grid = self.canvas.tile_grid();
@@ -203,28 +298,29 @@ impl Document {
             tiles_x: grid.tiles_x,
             tiles_y: grid.tiles_y,
             tiles_total: grid.total(),
-            // Stage 1: a document has no layers, hence no allocated tiles. Stage 2 replaces
-            // this with the real count from the tile store.
-            tiles_allocated: 0,
+            tiles_allocated: self.tiles_allocated() as u64,
             dense_rgba_bytes: self.canvas.dense_rgba_bytes(),
         }
     }
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn canvas(w: u32, h: u32) -> CanvasSize {
-        CanvasSize::new(w, h).unwrap()
-    }
+    fn canvas(w: u32, h: u32) -> CanvasSize { CanvasSize::new(w, h).unwrap() }
+    fn doc() -> Document { Document::new("test", DocumentMode::Raster, canvas(800, 600)).unwrap() }
+
+    // ── Existing Stage 1 tests (unchanged) ────────────────────────────────────
 
     #[test]
     fn canvas_8000_square_matches_the_spec_numbers() {
         let c = canvas(8000, 8000);
         assert_eq!(c.dense_rgba_bytes(), 256_000_000);
         let grid = c.tile_grid();
-        assert_eq!((grid.tiles_x, grid.tiles_y), (32, 32)); // 8000 / 256 = 31.25 -> 32
+        assert_eq!((grid.tiles_x, grid.tiles_y), (32, 32));
         assert_eq!(grid.total(), 1024);
     }
 
@@ -260,11 +356,9 @@ mod tests {
 
     #[test]
     fn product_of_two_legal_sides_never_overflows_u64() {
-        // 32768 * 32767 is the largest product just below the 2^30 pixel budget.
         let c = CanvasSize::new(MAX_CANVAS_DIMENSION, MAX_CANVAS_DIMENSION - 1).unwrap();
         assert_eq!(c.pixel_count(), 32_768 * 32_767);
         assert!(c.pixel_count() < MAX_CANVAS_PIXELS);
-        // One pixel row more is rejected by the per-side limit.
         assert!(matches!(
             CanvasSize::new(MAX_CANVAS_DIMENSION, MAX_CANVAS_DIMENSION + 1),
             Err(RpxError::CanvasTooLarge { .. })
@@ -301,7 +395,7 @@ mod tests {
 
     #[test]
     fn name_length_counts_characters_not_bytes() {
-        let cyrillic = "ж".repeat(MAX_NAME_CHARS); // 2 bytes each in UTF-8
+        let cyrillic = "ж".repeat(MAX_NAME_CHARS);
         assert!(Document::new(&cyrillic, DocumentMode::Vector, canvas(10, 10)).is_ok());
     }
 
@@ -310,10 +404,8 @@ mod tests {
         let doc = Document::new("d", DocumentMode::Vector, canvas(8000, 8000)).unwrap();
         let wire = doc.info().to_wire();
         assert_eq!(wire.len(), DocumentInfo::WIRE_LEN);
-        assert_eq!(
-            wire,
-            [1, 1, 8000, 8000, 256, 32, 32, 1024, 0, 256_000_000]
-        );
+        // tilesAllocated is 0 for a new document with no layers.
+        assert_eq!(wire, [1, 1, 8000, 8000, 256, 32, 32, 1024, 0, 256_000_000]);
     }
 
     #[test]
@@ -323,5 +415,247 @@ mod tests {
         assert_eq!(info.tiles_allocated, 0);
         assert_eq!(info.tiles_total, 128 * 128);
         assert_eq!(info.dense_rgba_bytes, 4 * (1u64 << 30));
+    }
+
+    // ── New Stage 2.1b: RasterLayer ───────────────────────────────────────────
+
+    #[test]
+    fn raster_layer_defaults_are_visible_opaque_and_empty() {
+        let layer = RasterLayer::new(1, "Background".into());
+        assert_eq!(layer.id, 1);
+        assert_eq!(layer.name, "Background");
+        assert!(layer.visible, "new layer must be visible");
+        assert!((layer.opacity - 1.0).abs() < f32::EPSILON, "new layer must be fully opaque");
+        assert_eq!(layer.tile_count(), 0);
+    }
+
+    #[test]
+    fn add_layer_returns_unique_increasing_ids() {
+        let mut d = doc();
+        let id1 = d.add_layer("A".into());
+        let id2 = d.add_layer("B".into());
+        let id3 = d.add_layer("C".into());
+        assert_ne!(id1, id2);
+        assert_ne!(id2, id3);
+        assert!(id2 > id1);
+        assert!(id3 > id2);
+    }
+
+    #[test]
+    fn add_one_layer_accessible_by_id() {
+        let mut d = doc();
+        let id = d.add_layer("Background".into());
+        let layer = d.layer(id).unwrap();
+        assert_eq!(layer.name, "Background");
+        assert!(layer.visible);
+    }
+
+    #[test]
+    fn add_multiple_layers_all_accessible() {
+        let mut d = doc();
+        let id1 = d.add_layer("A".into());
+        let id2 = d.add_layer("B".into());
+        assert_eq!(d.layer(id1).unwrap().name, "A");
+        assert_eq!(d.layer(id2).unwrap().name, "B");
+    }
+
+    #[test]
+    fn get_layer_unknown_id_returns_none() {
+        let mut d = doc();
+        d.add_layer("X".into());
+        assert!(d.layer(999).is_none());
+    }
+
+    #[test]
+    fn new_document_has_no_layers() {
+        let d = doc();
+        assert_eq!(d.tiles_allocated(), 0);
+        assert!(d.layer(1).is_none());
+    }
+
+    // ── TileStore independence ─────────────────────────────────────────────────
+
+    #[test]
+    fn layers_have_independent_tile_stores() {
+        let mut d = doc();
+        let id1 = d.add_layer("A".into());
+        let id2 = d.add_layer("B".into());
+        assert!(d.set_pixel(id1, 0, 0, 0xFF_FF0000));
+        assert_eq!(d.layer(id1).unwrap().tile_count(), 1);
+        assert_eq!(d.layer(id2).unwrap().tile_count(), 0, "layer 2 must be untouched");
+    }
+
+    // ── set_pixel ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_pixel_into_existing_layer_returns_true() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        assert!(d.set_pixel(id, 10, 20, 0xFF_112233));
+    }
+
+    #[test]
+    fn set_pixel_into_unknown_layer_returns_false() {
+        let mut d = doc();
+        assert!(!d.set_pixel(999, 0, 0, 0xFF_FF0000));
+    }
+
+    #[test]
+    fn set_pixel_outside_canvas_returns_false_and_no_tile_allocated() {
+        let mut d = Document::new("t", DocumentMode::Raster, canvas(100, 100)).unwrap();
+        let id = d.add_layer("L".into());
+        assert!(!d.set_pixel(id, 100, 0, 0xFF_FF0000));
+        assert!(!d.set_pixel(id, 0, 100, 0xFF_FF0000));
+        assert_eq!(d.tiles_allocated(), 0);
+    }
+
+    #[test]
+    fn pixel_isolation_between_layers() {
+        let mut d = doc();
+        let id1 = d.add_layer("A".into());
+        let id2 = d.add_layer("B".into());
+        d.set_pixel(id1, 5, 5, 0xFF_FF0000);
+        d.set_pixel(id2, 5, 5, 0xFF_0000FF);
+        // Both layers touched the same canvas position but have separate tile stores.
+        assert_eq!(d.layer(id1).unwrap().tile_count(), 1);
+        assert_eq!(d.layer(id2).unwrap().tile_count(), 1);
+        // Read back pixels independently.
+        use core_raster::TileCoord;
+        let (coord, lx, ly) = TileCoord::locate(5, 5);
+        let p1 = d.layer(id1).unwrap().tiles().tile(coord).unwrap().get(lx, ly).unwrap();
+        let p2 = d.layer(id2).unwrap().tiles().tile(coord).unwrap().get(lx, ly).unwrap();
+        assert_ne!(p1, p2, "pixels in different layers must be independent");
+    }
+
+    #[test]
+    fn repeated_write_does_not_allocate_extra_tile() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        d.set_pixel(id, 0, 0, 0xFF_FF0000);
+        d.set_pixel(id, 0, 0, 0xFF_00FF00);
+        assert_eq!(d.tiles_allocated(), 1);
+    }
+
+    #[test]
+    fn argb_to_premultiplied_rgba_conversion() {
+        // 0x80_FF_00_00: a=128, r=255, g=0, b=0 → premultiplied r ≈ 128
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        d.set_pixel(id, 0, 0, 0x80_FF_00_00);
+        use core_raster::TileCoord;
+        let (coord, lx, ly) = TileCoord::locate(0, 0);
+        let pixel = d.layer(id).unwrap().tiles().tile(coord).unwrap().get(lx, ly).unwrap();
+        assert_eq!(pixel[3], 128);
+        assert!(pixel[0] <= 128);
+        assert_eq!(pixel[1], 0);
+        assert_eq!(pixel[2], 0);
+    }
+
+    #[test]
+    fn fully_transparent_pixel_into_missing_tile_does_not_allocate() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        d.set_pixel(id, 0, 0, 0x00_00_00_00);
+        assert_eq!(d.tiles_allocated(), 0);
+    }
+
+    // ── tiles_allocated ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tiles_allocated_initial_is_zero() {
+        assert_eq!(doc().tiles_allocated(), 0);
+    }
+
+    #[test]
+    fn tiles_allocated_counts_hidden_layers_too() {
+        let mut d = doc();
+        let id1 = d.add_layer("Visible".into());
+        let id2 = d.add_layer("Hidden".into());
+        d.layer_mut(id2).unwrap().visible = false;
+        d.set_pixel(id1, 0, 0, 0xFF_FF0000);
+        d.set_pixel(id2, 0, 0, 0xFF_0000FF);
+        assert_eq!(d.tiles_allocated(), 2, "hidden layers must be counted");
+    }
+
+    #[test]
+    fn tiles_allocated_sums_across_layers() {
+        let mut d = doc();
+        let id1 = d.add_layer("A".into());
+        let id2 = d.add_layer("B".into());
+        d.set_pixel(id1, 0, 0, 0xFF_FF0000);    // tile (0,0)
+        d.set_pixel(id2, 300, 0, 0xFF_0000FF);  // tile (1,0) in layer 2
+        assert_eq!(d.tiles_allocated(), 2);
+    }
+
+    #[test]
+    fn tiles_allocated_counts_multiple_tiles_per_layer() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        d.set_pixel(id, 0, 0, 0xFF_FF0000);    // tile (0,0)
+        d.set_pixel(id, 300, 0, 0xFF_00FF00);  // tile (1,0)
+        d.set_pixel(id, 0, 300, 0xFF_0000FF);  // tile (0,1)
+        assert_eq!(d.tiles_allocated(), 3);
+    }
+
+    // ── Wire: tilesAllocated field ─────────────────────────────────────────────
+
+    #[test]
+    fn tiles_allocated_field_is_at_slot_eight() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        d.set_pixel(id, 0, 0, 0xFF_FF0000);
+        let wire = d.info().to_wire();
+        assert_eq!(wire[8], 1, "tilesAllocated must be at slot 8");
+    }
+
+    #[test]
+    fn tiles_allocated_initial_value_is_zero_in_wire() {
+        let wire = doc().info().to_wire();
+        assert_eq!(wire[8], 0);
+    }
+
+    #[test]
+    fn tiles_allocated_updates_after_pixel_write_in_wire() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        d.set_pixel(id, 0, 0, 0xFF_FF0000);
+        assert_eq!(d.info().to_wire()[8], 1);
+    }
+
+    #[test]
+    fn previous_wire_fields_preserved() {
+        let d = Document::new("d", DocumentMode::Vector, canvas(8000, 8000)).unwrap();
+        let wire = d.info().to_wire();
+        assert_eq!(wire[0], 1);     // version
+        assert_eq!(wire[1], 1);     // Vector
+        assert_eq!(wire[2], 8000);  // width
+        assert_eq!(wire[3], 8000);  // height
+        assert_eq!(wire[4], 256);   // tileSize
+        assert_eq!(wire[5], 32);    // tilesX
+        assert_eq!(wire[6], 32);    // tilesY
+        assert_eq!(wire[7], 1024);  // tilesTotal
+        assert_eq!(wire[8], 0);     // tilesAllocated (no layers)
+        assert_eq!(wire[9], 256_000_000); // denseRgbaBytes
+    }
+
+    // ── TileStore integration ──────────────────────────────────────────────────
+
+    #[test]
+    fn multiple_pixels_in_one_tile_stay_in_one_tile() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        for i in 0..10u32 {
+            d.set_pixel(id, i, i, 0xFF_FF0000);
+        }
+        assert_eq!(d.tiles_allocated(), 1);
+    }
+
+    #[test]
+    fn pixels_across_tile_boundary_use_two_tiles() {
+        let mut d = doc();
+        let id = d.add_layer("L".into());
+        d.set_pixel(id, 255, 0, 0xFF_FF0000);
+        d.set_pixel(id, 256, 0, 0xFF_0000FF);
+        assert_eq!(d.tiles_allocated(), 2);
     }
 }
