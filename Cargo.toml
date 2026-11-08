@@ -1,12 +1,13 @@
 # Rust workspace of the RPX engine.
-# Stage 1 contains only what the Android shell needs today:
-#   core-model : pure Rust document model + handle registry (no unsafe, no dependencies)
-#   core-ffi   : JNI surface, builds librpx_core.so
-# The remaining crates from the roadmap (core-raster, core-vector, ...) are added
+# Crates today (a crate is added in the stage that first needs it):
+#   core-model  : pure Rust document model + handle registry (no unsafe, no dependencies)
+#   core-raster : tile primitives, sparse copy-on-write tile store, tile geometry (stage 2.1a; not used by the app yet)
+#   core-ffi    : JNI surface, builds librpx_core.so
+# The remaining crates from the roadmap (core-brush, core-history, core-render, core-vector, ...) are added
 # in the stage that first needs them, not before.
 [workspace]
 resolver = "3"
-members = ["crates/core-model", "crates/core-ffi"]
+members = ["crates/core-model", "crates/core-raster", "crates/core-ffi"]
 
 [workspace.package]
 version = "0.1.0"

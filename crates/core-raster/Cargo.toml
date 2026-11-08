@@ -1,0 +1,12 @@
+[package]
+name = "core-raster"
+description = "Raster tile primitives: RGBA8 tiles, a sparse copy-on-write tile store and canvas/tile geometry (no unsafe, no dependencies)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"

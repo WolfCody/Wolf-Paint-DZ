@@ -8,6 +8,8 @@ For every lib/<abi>/librpx_core.so (abis from --abis, default `rpx.rustAbis` in 
      malformed file is reported as an error, never as a traceback;
   3. for 64-bit ABIs (--require-16k, default arm64-v8a x86_64): the zip data offset is a multiple of 16384
      and every PT_LOAD has p_align >= 16384 (Android 15+ devices with 16 KB pages);
+  5. EVERY other `.so` of the 64-bit ABIs (third-party libraries such as libandroidx.graphics.path.so) is stored,
+     zip-aligned to 16384 and has PT_LOAD p_align >= 16384 too (Google Play checks all native libraries).
   4. every `Java_<package>_core_RustBridge_<method>` implied by the Kotlin `external fun`s is a valid JNI
      export: it is in the dynamic symbol table (.dynsym, SHT_DYNSYM) and has binding GLOBAL, visibility
      DEFAULT, type FUNC and a defined section index (not SHN_UNDEF, not reserved, in range). WEAK, LOCAL,
@@ -110,9 +112,10 @@ def _read_symbols(data, section, sections, bits, what):
     return symbols
 
 
-def parse_elf(data: bytes):
+def parse_elf(data: bytes, with_symbols: bool = True):
     """Validates an ELF shared object and returns
     dict(bits, machine, load_aligns, symbols, static_names, shnum, exports).
+    with_symbols=False validates only the header and the PT_LOAD segments (third-party libraries).
     Raises ElfError (never struct.error/IndexError) for anything malformed."""
     n = len(data)
     if n < 16 or data[:4] != b"\x7fELF":
@@ -144,12 +147,13 @@ def parse_elf(data: bytes):
         raise ElfError(f"program header entry size {e_phentsize}, expected {phent_exp}")
     if e_phoff > n or e_phnum * e_phentsize > n - e_phoff:
         raise ElfError("program header table lies outside the file")
-    if e_shnum == 0:
-        raise ElfError("no section headers (cannot read the dynamic symbol table)")
-    if e_shentsize != shent_exp:
-        raise ElfError(f"section header entry size {e_shentsize}, expected {shent_exp}")
-    if e_shoff > n or e_shnum * e_shentsize > n - e_shoff:
-        raise ElfError("section header table lies outside the file")
+    if with_symbols:
+        if e_shnum == 0:
+            raise ElfError("no section headers (cannot read the dynamic symbol table)")
+        if e_shentsize != shent_exp:
+            raise ElfError(f"section header entry size {e_shentsize}, expected {shent_exp}")
+        if e_shoff > n or e_shnum * e_shentsize > n - e_shoff:
+            raise ElfError("section header table lies outside the file")
 
     load_aligns = []
     for i in range(e_phnum):
@@ -171,6 +175,9 @@ def parse_elf(data: bytes):
         load_aligns.append(max(p_align, 1))
     if not load_aligns:
         raise ElfError("no PT_LOAD segment")
+    if not with_symbols:
+        return {"bits": bits, "machine": machine, "load_aligns": load_aligns, "symbols": [],
+                "static_names": set(), "shnum": e_shnum, "exports": set()}
 
     sections = []
     for i in range(e_shnum):
@@ -280,6 +287,31 @@ def check_apk(apk: Path, abis, require_16k, expected_exports, lib_name="librpx_c
             report.append(f"{entry}: {elf['bits']}-bit, stored={info.compress_type == zipfile.ZIP_STORED}, "
                           f"zip offset%16384={offset % PAGE_16K}, min PT_LOAD align={min_align:#x}, "
                           f"JNI exports ok={not jni_errors} ({len(expected_exports)} expected)")
+        # every other native library of the 64-bit ABIs (third-party): packaging and 16 KB alignment only
+        others = 0
+        for name, info in sorted(names.items()):
+            parts = name.split("/")
+            if len(parts) != 3 or parts[0] != "lib" or not parts[2].endswith(".so") or parts[2] == lib_name:
+                continue
+            if parts[1] not in require_16k:
+                continue
+            others += 1
+            if info.compress_type != zipfile.ZIP_STORED:
+                errors.append(f"{name} is compressed in the zip (must be stored, uncompressed)")
+            try:
+                offset = zip_data_offset(apk, info)
+                elf = parse_elf(zf.read(info), with_symbols=False)
+            except ElfError as e:
+                errors.append(f"{name}: malformed ELF: {e}")
+                continue
+            except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, zlib.error, OSError) as e:
+                errors.append(f"{name}: cannot read the entry: {e}")
+                continue
+            if offset % PAGE_16K != 0:
+                errors.append(f"{name}: zip data offset {offset} is not a multiple of 16384")
+            if min(elf["load_aligns"]) < PAGE_16K:
+                errors.append(f"{name}: PT_LOAD p_align {min(elf['load_aligns']):#x} < 0x4000 (not 16 KB aligned)")
+        report.append(f"{others} other native librar{'y' if others == 1 else 'ies'} in 64-bit ABIs checked for storage and 16 KB alignment")
     return errors, report
 
 

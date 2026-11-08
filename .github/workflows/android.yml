@@ -72,6 +72,23 @@ jobs:
           fi
           test -s Cargo.lock
 
+      # A new or changed workspace crate (for example core-raster) makes the committed Cargo.lock stale.
+      # Only the entries of the project's own crates may be updated here; a change of ANY third-party package
+      # fails the job (scripts/check_lock_change.py). Commit the Cargo.lock from the bootstrap-files artifact.
+      - name: Cargo.lock matches the workspace crates
+        run: |
+          set -euo pipefail
+          if cargo metadata --locked --format-version 1 > /dev/null 2> "$RUNNER_TEMP/cargo-metadata.err"; then
+            echo "Cargo.lock is in sync with the manifests"
+          else
+            cat "$RUNNER_TEMP/cargo-metadata.err"
+            echo "::warning::Cargo.lock is out of date for the workspace crates. Updating only the workspace entries; commit the Cargo.lock from the bootstrap-files artifact."
+            cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.committed"
+            cargo update --workspace
+            python3 scripts/check_lock_change.py "$RUNNER_TEMP/Cargo.lock.committed" Cargo.lock
+            cargo metadata --locked --format-version 1 > /dev/null
+          fi
+
       # Gradle is installed here ONLY so that scripts/generate-wrapper.sh has a `gradle` to run.
       # cache-provider: basic = the MIT-licensed cache; the v6 default is a proprietary component with separate terms.
       - uses: gradle/actions/setup-gradle@50e97c2cd7a37755bbfafc9c5b7cafaece252f6e # v6.1.0
@@ -219,13 +236,30 @@ jobs:
           echo "Platform packages offered by sdkmanager:"
           "$SDKMANAGER" --list 2>/dev/null | grep -E "platforms;android-3[67]" || true
           PACKAGES=("platforms;${PLATFORM}" "build-tools;${BUILD_TOOLS_VERSION}" "ndk;${NDK_VERSION}")
-          "$SDKMANAGER" "${PACKAGES[@]}" 2>&1 | tee sdkmanager-install.log
-          # sdkmanager exits with 0 even for an unknown package ("Warning: Failed to find package ..."),
-          # so the log and the installed list are checked explicitly.
-          if grep -q "Failed to find package" sdkmanager-install.log; then
-            echo "::error::sdkmanager could not find a requested package (see log above)"
-            exit 1
-          fi
+          # A corrupted or truncated download ("Error on ZipFile unknown archive", seen when the NDK was fetched in
+          # CI run #7) is transient: retry up to 3 times after removing the partial package directories.
+          # An unknown package is permanent. sdkmanager exits with 0 even for an unknown package
+          # ("Warning: Failed to find package ..."), so the log and the installed list are checked explicitly.
+          attempts=3
+          for attempt in $(seq 1 "$attempts"); do
+            status=0
+            "$SDKMANAGER" "${PACKAGES[@]}" 2>&1 | tee sdkmanager-install.log || status=$?
+            if grep -q "Failed to find package" sdkmanager-install.log; then
+              echo "::error::sdkmanager could not find a requested package (see log above)"
+              exit 1
+            fi
+            if [ "$status" -eq 0 ] && ! grep -qiE "Error on ZipFile|unknown archive" sdkmanager-install.log; then
+              break
+            fi
+            if [ "$attempt" -eq "$attempts" ]; then
+              echo "::error::sdkmanager failed $attempts times (last exit status $status)"
+              exit 1
+            fi
+            echo "::warning::sdkmanager attempt $attempt failed (exit status $status); removing partial downloads and retrying"
+            rm -rf "${ANDROID_HOME}/.temp" "${ANDROID_HOME}/ndk/${NDK_VERSION}" \
+              "${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}" "${ANDROID_HOME}/platforms/${PLATFORM}"
+            sleep "${SDK_RETRY_DELAY:-15}"
+          done
           INSTALLED="$("$SDKMANAGER" --list_installed 2>/dev/null)"
           for pkg in "${PACKAGES[@]}"; do
             printf '%s\n' "$INSTALLED" | grep -qF "$pkg" || { echo "::error::package '$pkg' is not installed"; exit 1; }

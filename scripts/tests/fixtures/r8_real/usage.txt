@@ -1,0 +1,37 @@
+_COROUTINE.ArtificialStackFrames:
+    public final java.lang.StackTraceElement coroutineCreation()
+_COROUTINE.CoroutineDebuggingKt:
+    public static final java.lang.String getARTIFICIAL_FRAME_PACKAGE_NAME()
+_COROUTINE._BOUNDARY:
+    public void <init>()
+_COROUTINE._CREATION
+android.support.v4.app.INotificationSideChannel$Default
+android.support.v4.app.INotificationSideChannel$Stub$Proxy
+android.support.v4.app.INotificationSideChannel$Stub
+    public static final int $stable
+    public final com.dzekiwolf.wolfpaintdz.core.NativeEngine component1()
+    public final com.dzekiwolf.wolfpaintdz.core.EngineState$Ready copy(com.dzekiwolf.wolfpaintdz.core.NativeEngine)
+    public static synthetic com.dzekiwolf.wolfpaintdz.core.EngineState$Ready copy$default(com.dzekiwolf.wolfpaintdz.core.EngineState$Ready,com.dzekiwolf.wolfpaintdz.core.NativeEngine,int,java.lang.Object)
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$CanvasTooLarge:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Internal:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$InvalidArgument:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$InvalidHandle:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Io:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$NativePanic:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$NotInitialized:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RpxNativeException$Unsupported:
+    public static final int $stable
+com.dzekiwolf.wolfpaintdz.core.RustBridge:
+    public static final int $stable
+    public static final com.dzekiwolf.wolfpaintdz.core.RustBridge INSTANCE
+    private static final java.lang.String LIBRARY
+com.dzekiwolf.wolfpaintdz.core.RustEngine:
+    public static final int $stable
+    public final void triggerDebugPanic()
