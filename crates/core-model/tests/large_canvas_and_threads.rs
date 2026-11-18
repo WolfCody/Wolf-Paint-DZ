@@ -20,8 +20,8 @@ fn creating_8000_square_documents_allocates_no_pixel_memory() {
         .map(|i| engine.create_document(&format!("big {i}"), DocumentMode::Raster, canvas).unwrap())
         .collect();
     for h in &handles {
-        let info = engine.document(*h).unwrap().info();
-        assert_eq!(info.tiles_total, 1024);
+let document = engine.document(*h).unwrap();
+let info = document.lock().unwrap().info();        assert_eq!(info.tiles_total, 1024);
         assert_eq!(info.tiles_allocated, 0);
         assert_eq!(info.dense_rgba_bytes, 256_000_000);
     }
@@ -44,8 +44,8 @@ fn concurrent_create_read_close_is_consistent() {
                     let h = engine
                         .create_document(&format!("t{t}-{i}"), DocumentMode::Vector, canvas)
                         .unwrap();
-                    assert_eq!(engine.document(h).unwrap().name(), format!("t{t}-{i}"));
-                    engine.close_document(h).unwrap();
+let document = engine.document(h).unwrap();
+assert_eq!(document.lock().unwrap().name(), format!("t{t}-{i}"));                    engine.close_document(h).unwrap();
                     assert!(matches!(engine.document(h), Err(RpxError::InvalidHandle(_))));
                 }
             });
@@ -63,7 +63,6 @@ fn closing_a_document_while_another_thread_uses_it_is_safe() {
     let held = engine.document(h).unwrap();
     engine.close_document(h).unwrap();
     // The Arc obtained before close stays valid; new lookups fail.
-    assert_eq!(held.info().width, 64);
-    assert!(engine.document(h).is_err());
+assert_eq!(held.lock().unwrap().info().width, 64);    assert!(engine.document(h).is_err());
     let _ = std::fs::remove_dir_all(dir);
 }

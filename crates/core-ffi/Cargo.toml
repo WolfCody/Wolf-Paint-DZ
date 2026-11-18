@@ -1,19 +1,21 @@
 [package]
 name = "core-ffi"
-description = "JNI surface of the RPX engine (librpx_core.so)"
+description = "JNI surface of the Wolf Paint DZ engine (librpx_core.so)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [lib]
-# Library file name is librpx_core.so  <-> System.loadLibrary("rpx_core") in RustBridge.kt
 name = "rpx_core"
-# rlib is only there so that `cargo test` can exercise the pure helpers on the host.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-core-model = { path = "../core-model" }
+core-model.workspace = true
+core-raster.workspace = true
+core-brush.workspace = true
+core-history.workspace = true
+core-render.workspace = true
 jni.workspace = true
 log.workspace = true
 

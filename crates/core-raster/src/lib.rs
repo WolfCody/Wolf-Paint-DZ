@@ -12,8 +12,10 @@
 
 pub mod geometry;
 pub mod tile;
+pub mod raster_layer;
 pub mod tile_store;
 
 pub use geometry::{clip_to_canvas, ClippedRect, PixelRect, TileCoord, TileRange};
 pub use tile::{premultiply, Rgba, Tile, BYTES_PER_PIXEL, TILE_BYTES, TILE_PIXELS, TILE_SIZE, TRANSPARENT};
+pub use raster_layer::RasterLayer;
 pub use tile_store::TileStore;

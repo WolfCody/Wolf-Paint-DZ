@@ -41,4 +41,9 @@
         <item>GB</item>
         <item>TB</item>
     </string-array>
+    <string name="editor_title">Canvas</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_redo">Redo</string>
+    <string name="action_add_layer">Add layer</string>
+    <string name="action_open">Open</string>
 </resources>
