@@ -9,7 +9,7 @@ sealed interface EngineState {
     data class Failed(val reason: String) : EngineState
 
     companion object {
-        private const val TAG = "rpx"
+        private const val TAG = "wolf-paint-dz"
 
         fun start(workDir: File): EngineState = try {
             Ready(RustEngine.create(workDir))

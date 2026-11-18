@@ -1,20 +1,18 @@
 //! RPX engine: document model, opaque handles and session state.
 //!
-//! Stage 2.1b: `core-model` now depends on `core-raster` for `RasterLayer`/`TileStore`.
-//! Dependency direction: core-ffi → core-model → core-raster
-//! `core-raster` remains independent (no deps of its own, `unsafe_code = "forbid"`).
-//!
-//! This crate is free of `unsafe` and `core-raster` has no third-party dependencies,
-//! so `cargo test --workspace` runs on any host without Android.
+//! This crate is deliberately free of `unsafe` and of third-party dependencies, so the
+//! whole model can be tested natively with plain `cargo test` (no Android needed).
+//! The JNI layer lives in `core-ffi` and only converts types.
 
 pub mod document;
 pub mod engine;
 pub mod error;
 pub mod handle;
+pub mod raster_layer;
 
 pub use document::{
-    CanvasSize, Document, DocumentInfo, DocumentMode, RasterLayer, TileGrid,
-    BYTES_PER_PIXEL, MAX_CANVAS_DIMENSION, MAX_CANVAS_PIXELS, MAX_NAME_CHARS, TILE_SIZE,
+    CanvasSize, Document, DocumentInfo, DocumentMode, TileGrid, BYTES_PER_PIXEL,
+    MAX_CANVAS_DIMENSION, MAX_CANVAS_PIXELS, MAX_NAME_CHARS, TILE_SIZE,
 };
 pub use engine::{Engine, EngineConfig};
 pub use error::{ErrorKind, Result, RpxError};

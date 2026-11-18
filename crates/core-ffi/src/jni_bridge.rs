@@ -1,261 +1,245 @@
-//! JNI exports for `com.dzekiwolf.wolfpaintdz.core.RustBridge`.
-//!
-//! Contract (keep in sync with RustBridge.kt; `scripts/check_jni_symbols.py` verifies names
-//! and arity):
-//!
-//! * Every function is thread-safe and may be called from any Java thread.
-//! * Failures are reported as Java exceptions (`RpxNativeException` subclasses), never as
-//!   magic return values. After throwing, the returned value is a dummy and must be ignored
-//!   (the JVM does not deliver it because the exception propagates).
-//! * Rust panics are caught and reported as `RpxNativeException$NativePanic`.
-//! * Documents are addressed by opaque `long` handles that are validated on every call.
-//!
-//! Function names follow the JNI mangling rule: `Java_` + package with `.→_` + `_` + class +
-//! `_` + method. The package and class contain no underscores, so no `_1` escapes are needed.
-
 #![allow(non_snake_case)]
-
-use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jint, jlong, jlongArray, jstring, JNI_FALSE, JNI_TRUE};
+use jni::objects::{JClass, JFloatArray, JString};
+use jni::sys::{jboolean, jfloat, jint, jlong, jlongArray, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
-
 use core_model::{CanvasSize, DocumentMode, Handle, RpxError};
-
+use core_brush::BrushKind;
 use crate::{catch_panic, engine, exception_class, exception_class_for, init_engine, version_string};
+use crate::drawing_session::DrawingSession;
+use crate::session_registry as sessions;
 
-enum BridgeError {
-    Rpx(RpxError),
-    Jni(jni::errors::Error),
-}
+// ── plumbing ──────────────────────────────────────────────────────────────────
+enum BE { Rpx(RpxError), Jni(jni::errors::Error) }
+impl From<RpxError> for BE { fn from(e: RpxError) -> Self { BE::Rpx(e) } }
+impl From<jni::errors::Error> for BE { fn from(e: jni::errors::Error) -> Self { BE::Jni(e) } }
+type BR<T> = Result<T, BE>;
 
-impl From<RpxError> for BridgeError {
-    fn from(error: RpxError) -> Self { BridgeError::Rpx(error) }
-}
-
-impl From<jni::errors::Error> for BridgeError {
-    fn from(error: jni::errors::Error) -> Self { BridgeError::Jni(error) }
-}
-
-type BridgeResult<T> = Result<T, BridgeError>;
-
-/// Runs `body` with panic containment and converts every failure into a pending Java exception.
-fn run<'local, T>(
-    env: &mut JNIEnv<'local>,
-    fallback: T,
-    body: impl FnOnce(&mut JNIEnv<'local>) -> BridgeResult<T>,
-) -> T {
-    match catch_panic(|| body(&mut *env)) {
-        Ok(Ok(value)) => value,
-        Ok(Err(error)) => { report(env, error); fallback }
-        Err(message) => {
-            throw(env, exception_class::NATIVE_PANIC, &format!("native panic: {message}"));
-            fallback
-        }
+fn run<'l, T>(env: &mut JNIEnv<'l>, fb: T, body: impl FnOnce(&mut JNIEnv<'l>) -> BR<T>) -> T {
+    match catch_panic(|| body(env)) {
+        Ok(Ok(v)) => v,
+        Ok(Err(BE::Rpx(e))) => { throw(env, exception_class_for(e.kind()), &e.to_string()); fb }
+        Ok(Err(BE::Jni(jni::errors::Error::JavaException))) => fb,
+        Ok(Err(BE::Jni(e))) => { throw(env, exception_class::INTERNAL, &e.to_string()); fb }
+        Err(m) => { throw(env, exception_class::NATIVE_PANIC, &format!("panic: {m}")); fb }
     }
 }
-
-fn report(env: &mut JNIEnv<'_>, error: BridgeError) {
-    match error {
-        BridgeError::Rpx(error) => {
-            log::warn!("{error}");
-            throw(env, exception_class_for(error.kind()), &error.to_string());
-        }
-        BridgeError::Jni(jni::errors::Error::JavaException) => {}
-        BridgeError::Jni(error) => {
-            log::error!("jni error: {error}");
-            throw(env, exception_class::INTERNAL, &format!("jni error: {error}"));
-        }
-    }
-}
-
-fn throw(env: &mut JNIEnv<'_>, class: &str, message: &str) {
+fn throw(env: &mut JNIEnv<'_>, cls: &str, msg: &str) {
     if env.exception_check().unwrap_or(false) { return; }
-    if let Err(error) = env.throw_new(class, message) {
-        log::error!("could not throw {class}: {error}");
-    }
+    let _ = env.throw_new(cls, msg);
+}
+fn rs(env: &mut JNIEnv<'_>, s: &JString<'_>) -> BR<String> { Ok(env.get_string(s)?.into()) }
+fn hnd(raw: jlong) -> BR<Handle> {
+    Handle::from_raw(raw as u64).ok_or_else(|| BE::Rpx(RpxError::InvalidHandle(raw as u64)))
 }
 
-fn read_string(env: &mut JNIEnv<'_>, value: &JString<'_>) -> BridgeResult<String> {
-    Ok(env.get_string(value)?.into())
-}
-
-fn to_handle(raw: jlong) -> BridgeResult<Handle> {
-    Handle::from_raw(raw as u64)
-        .ok_or_else(|| BridgeError::Rpx(RpxError::InvalidHandle(raw as u64)))
-}
-
-/// `static native fun nativeInit(workDir: String)`
+// ── existing methods ──────────────────────────────────────────────────────────
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeInit<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    work_dir: JString<'local>,
-) {
-    run(&mut env, (), |env| {
-        let dir = read_string(env, &work_dir)?;
-        init_engine(&dir)?;
-        Ok(())
-    })
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeInit<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, d: JString<'l>) {
+    run(&mut env, (), |e| { init_engine(&rs(e, &d)?)?; sessions::init(); Ok(()) })
 }
-
-/// `static native fun nativeVersion(): String`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeVersion<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-) -> jstring {
-    run(&mut env, std::ptr::null_mut(), |env| {
-        Ok(env.new_string(version_string())?.into_raw())
-    })
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeVersion<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>) -> jstring {
+    run(&mut env, std::ptr::null_mut(), |e| Ok(e.new_string(version_string())?.into_raw()))
 }
-
-/// `static native fun nativeCreateDocument(name: String, mode: Int, width: Int, height: Int): Long`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeCreateDocument<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    name: JString<'local>,
-    mode: jint,
-    width: jint,
-    height: jint,
-) -> jlong {
-    run(&mut env, 0, |env| {
-        let name = read_string(env, &name)?;
-        let mode = DocumentMode::from_wire(mode)?;
-        let canvas = CanvasSize::from_signed(width, height)?;
-        let handle = engine()?.create_document(&name, mode, canvas)?;
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeCreateDocument<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, name: JString<'l>, mode: jint, w: jint, h: jint) -> jlong {
+    run(&mut env, 0, |e| {
+        let n = rs(e, &name)?;
+        let m = DocumentMode::from_wire(mode)?;
+        let c = CanvasSize::from_signed(w, h)?;
+        let handle = engine()?.create_document(&n, m, c)?;
+        if matches!(m, DocumentMode::Raster) {
+            sessions::insert(handle, DrawingSession::new(c.width(), c.height()));
+        }
         Ok(handle.raw() as jlong)
     })
 }
-
-/// `static native fun nativeDocumentInfo(handle: Long): LongArray`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocumentInfo<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    handle: jlong,
-) -> jlongArray {
-    run(&mut env, std::ptr::null_mut(), |env| {
-        let doc_arc = engine()?.document(to_handle(handle)?)?;
-        let doc = doc_arc.lock().unwrap_or_else(|p| p.into_inner());
-        let wire = doc.info().to_wire();
-        let array = env.new_long_array(wire.len() as jint)?;
-        env.set_long_array_region(&array, 0, &wire)?;
-        Ok(array.into_raw())
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocumentInfo<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong) -> jlongArray {
+    run(&mut env, std::ptr::null_mut(), |e| {
+        let h = hnd(handle)?;
+        let doc = engine()?.document(h)?;
+        let mut wire = doc.info().to_wire();
+        if let Some(n) = sessions::with(h, |s| s.tiles_allocated() as i64) { wire[8] = n; }
+        let arr = e.new_long_array(wire.len() as jint)?;
+        e.set_long_array_region(&arr, 0, &wire)?;
+        Ok(arr.into_raw())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocumentName<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong) -> jstring {
+    run(&mut env, std::ptr::null_mut(), |e| {
+        Ok(e.new_string(engine()?.document(hnd(handle)?)?.name())?.into_raw())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeCloseDocument<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong) {
+    run(&mut env, (), |_| { let h = hnd(handle)?; sessions::remove(h); engine()?.close_document(h)?; Ok(()) })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeOpenDocuments<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>) -> jlongArray {
+    run(&mut env, std::ptr::null_mut(), |e| {
+        let v: Vec<jlong> = engine()?.open_documents().into_iter().map(|h| h.raw() as jlong).collect();
+        let arr = e.new_long_array(v.len() as jint)?;
+        e.set_long_array_region(&arr, 0, &v)?;
+        Ok(arr.into_raw())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDebugPanic<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>) {
+    run(&mut env, (), |_| {
+        if cfg!(debug_assertions) { panic!("intentional debug panic"); }
+        Err(BE::Rpx(RpxError::Unsupported("debug only")))
     })
 }
 
-/// `static native fun nativeDocumentName(handle: Long): String`
+// ── drawing methods ───────────────────────────────────────────────────────────
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDocumentName<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    handle: jlong,
-) -> jstring {
-    run(&mut env, std::ptr::null_mut(), |env| {
-        let doc_arc = engine()?.document(to_handle(handle)?)?;
-        let doc = doc_arc.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(env.new_string(doc.name())?.into_raw())
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeAddLayer<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, _name: JString<'l>) -> jlong {
+    run(&mut env, -1, |_| {
+        let h = hnd(handle)?;
+        Ok(sessions::with(h, |s| {
+            let lid = core_model::raster_layer::LayerId(s.layer_order.len() as u64 + 1);
+            s.add_layer(lid);
+            lid.0 as jlong
+        }).unwrap_or(-1))
     })
 }
-
-/// `static native fun nativeCloseDocument(handle: Long)`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeCloseDocument<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    handle: jlong,
-) {
-    run(&mut env, (), |_env| {
-        engine()?.close_document(to_handle(handle)?)?;
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeRemoveLayer<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, layer_id: jlong) {
+    run(&mut env, (), |_| {
+        let h = hnd(handle)?;
+        sessions::with(h, |s| s.remove_layer(core_model::raster_layer::LayerId(layer_id as u64)));
         Ok(())
     })
 }
-
-/// `static native fun nativeOpenDocuments(): LongArray`
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeOpenDocuments<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-) -> jlongArray {
-    run(&mut env, std::ptr::null_mut(), |env| {
-        let raws: Vec<jlong> = engine()?
-            .open_documents()
-            .into_iter()
-            .map(|h| h.raw() as jlong)
-            .collect();
-        let array = env.new_long_array(raws.len() as jint)?;
-        env.set_long_array_region(&array, 0, &raws)?;
-        Ok(array.into_raw())
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeSetActiveLayer<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, layer_id: jlong) {
+    run(&mut env, (), |_| {
+        sessions::with(hnd(handle)?, |s| {
+            s.active_layer = Some(core_model::raster_layer::LayerId(layer_id as u64));
+        });
+        Ok(())
     })
 }
-
-/// `static native fun nativeDebugPanic()` — proves panics become Java exceptions.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeDebugPanic<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-) {
-    run(&mut env, (), |_env| {
-        if cfg!(debug_assertions) {
-            panic!("intentional panic from nativeDebugPanic (debug builds only)");
-        }
-        Err(BridgeError::Rpx(RpxError::Unsupported(
-            "nativeDebugPanic is available in debug builds only",
-        )))
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeSetLayerVisible<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, layer_id: jlong, visible: jboolean) {
+    run(&mut env, (), |_| {
+        sessions::with(hnd(handle)?, |s| {
+            s.layer_visible.insert(core_model::raster_layer::LayerId(layer_id as u64), visible == JNI_TRUE);
+        });
+        Ok(())
     })
 }
-
-/// `static native fun nativeAddLayer(documentHandle: Long, name: String): Long`
-///
-/// Creates a new raster layer in the document and returns its unique layer ID.
-/// The layer is visible and fully opaque by default.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeAddLayer<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    document_handle: jlong,
-    name: JString<'local>,
-) -> jlong {
-    run(&mut env, 0, |env| {
-        let handle = to_handle(document_handle)?;
-        let name = read_string(env, &name)?;
-        if name.is_empty() {
-            return Err(BridgeError::Rpx(RpxError::InvalidArgument(
-                "layer name must not be empty".into(),
-            )));
-        }
-        let layer_id = engine()?.add_layer(handle, name)?;
-        Ok(layer_id as jlong)
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeSetLayerOpacity<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, layer_id: jlong, opacity: jfloat) {
+    run(&mut env, (), |_| {
+        sessions::with(hnd(handle)?, |s| {
+            s.layer_opacity.insert(core_model::raster_layer::LayerId(layer_id as u64), opacity);
+        });
+        Ok(())
     })
 }
-
-/// `static native fun nativeSetPixel(documentHandle: Long, layerId: Long, x: Int, y: Int, colorArgb: Int): Boolean`
-///
-/// Writes one pixel into a layer. `colorArgb` is the standard Android `0xAARRGGBB` integer.
-/// ARGB→premultiplied-RGBA conversion happens exactly once inside `Document::set_pixel`.
-/// Returns `true` on success, `false` if coordinates are outside the canvas.
-/// Throws if the document or layer does not exist.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeSetPixel<'local>(
-    mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    document_handle: jlong,
-    layer_id: jlong,
-    x: jint,
-    y: jint,
-    color_argb: jint,
-) -> jboolean {
-    run(&mut env, JNI_FALSE, |_env| {
-        let handle = to_handle(document_handle)?;
-        // Reject negative coordinates before converting to u32.
-        let px = u32::try_from(x)
-            .map_err(|_| RpxError::InvalidArgument(format!("negative x coordinate: {x}")))?;
-        let py = u32::try_from(y)
-            .map_err(|_| RpxError::InvalidArgument(format!("negative y coordinate: {y}")))?;
-        let layer_id = layer_id as u64;
-        let argb = color_argb as u32;
-        let wrote = engine()?.set_pixel(handle, layer_id, px, py, argb)?;
-        Ok(if wrote { JNI_TRUE } else { JNI_FALSE })
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeBrushSet<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>,
+    handle: jlong, size: jfloat, hardness: jfloat, opacity: jfloat, flow: jfloat,
+    r: jint, g: jint, b: jint, eraser: jboolean) {
+    run(&mut env, (), |_| {
+        sessions::with(hnd(handle)?, |s| {
+            s.brush.size = size; s.brush.hardness = hardness;
+            s.brush.opacity = opacity; s.brush.flow = flow;
+            s.brush.color = [r as u8, g as u8, b as u8, 255];
+            s.brush.kind = if eraser == JNI_TRUE { BrushKind::Eraser } else { BrushKind::Round };
+        });
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeStrokeBegin<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, x: jfloat, y: jfloat, pressure: jfloat) {
+    run(&mut env, (), |_| { sessions::with(hnd(handle)?, |s| s.stroke_begin(x, y, pressure)); Ok(()) })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeStrokePoints<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, pts: JFloatArray<'l>) {
+    run(&mut env, (), |e| {
+        let h = hnd(handle)?;
+        let len = e.get_array_length(&pts)? as usize;
+        let mut buf = vec![0f32; len];
+        e.get_float_array_region(&pts, 0, &mut buf)?;
+        sessions::with(h, |s| {
+            let mut i = 0;
+            while i + 2 < buf.len() { s.stroke_move(buf[i], buf[i+1], buf[i+2]); i += 3; }
+        });
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeStrokeEnd<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong) {
+    run(&mut env, (), |_| { sessions::with(hnd(handle)?, |s| s.stroke_end()); Ok(()) })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeStrokeCancel<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong) {
+    run(&mut env, (), |_| { sessions::with(hnd(handle)?, |s| s.stroke_cancel()); Ok(()) })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeUndo<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong) -> jboolean {
+    run(&mut env, JNI_FALSE, |_| {
+        Ok(if sessions::with(hnd(handle)?, |s| s.undo()).unwrap_or(false) { JNI_TRUE } else { JNI_FALSE })
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeRedo<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong) -> jboolean {
+    run(&mut env, JNI_FALSE, |_| {
+        Ok(if sessions::with(hnd(handle)?, |s| s.redo()).unwrap_or(false) { JNI_TRUE } else { JNI_FALSE })
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeRenderToBuffer<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>, handle: jlong, sw: jint, sh: jint) -> jni::sys::jbyteArray {
+    run(&mut env, std::ptr::null_mut(), |e| {
+        let h = hnd(handle)?;
+        let size = sw as usize * sh as usize * 4;
+        let mut buf = vec![0u8; size];
+        sessions::with(h, |s| {
+            s.viewport.screen_w = sw as u32; s.viewport.screen_h = sh as u32;
+            s.render_to_buffer(&mut buf);
+        });
+        let arr = e.new_byte_array(size as jint)?;
+        // SAFETY: &[u8] reinterpreted as &[i8] — standard JNI idiom, same size
+        let sbuf: &[i8] = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const i8, size) };
+        e.set_byte_array_region(&arr, 0, sbuf)?;
+        Ok(arr.into_raw())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_dzekiwolf_wolfpaintdz_core_RustBridge_nativeViewportUpdate<'l>(
+    mut env: JNIEnv<'l>, _: JClass<'l>,
+    handle: jlong, pan_x: jfloat, pan_y: jfloat, zoom: jfloat, rot: jfloat, sw: jint, sh: jint) {
+    run(&mut env, (), |_| {
+        sessions::with(hnd(handle)?, |s| {
+            s.viewport.pan_x = pan_x; s.viewport.pan_y = pan_y;
+            s.viewport.zoom = zoom; s.viewport.rotation_deg = rot;
+            s.viewport.screen_w = sw as u32; s.viewport.screen_h = sh as u32;
+        });
+        Ok(())
     })
 }
